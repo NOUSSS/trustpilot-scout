@@ -1,22 +1,31 @@
 # Trustpilot Scout
 
-Petit site local qui liste les entreprises référencées sur Trustpilot selon des
+Petit site qui liste les entreprises référencées sur Trustpilot selon des
 critères (mot-clé, secteur, note minimale, nombre d'avis, localisation) et
 fouille leurs avis.
 Pagination intégrée, cache et déduplication des requêtes.
 
-Quatre modes :
+Un seul formulaire, dont tous les champs se combinent :
 
-- **Entreprises** — recherche par nom, domaine, URL ou mot-clé ; les filtres de
-  note, d'avis et de localisation s'appliquent directement dans Trustpilot.
-- **Par secteur** — les entreprises d'une catégorie Trustpilot (noms français),
-  par pays et ville, avec note minimale et tri (pertinence, nombre d'avis,
-  avis les plus récents).
-- **Avis d'une entreprise** — les avis d'une entreprise donnée (nom, domaine ou
-  URL), filtrables par mot, note, langue, triés par date ou pertinence.
-- **Dans les avis** — le terme est cherché dans le *texte des avis* de chaque
-  entreprise trouvée, sans condition de nombre d'avis ni de note. Les entreprises
-  qui ont au moins un avis correspondant remontent, avec les extraits surlignés.
+- **Entreprise** — nom, mot-clé, domaine ou URL ;
+- **Secteur** — une catégorie Trustpilot (noms français) ;
+- **Dans les avis** — mot ou phrase cherché dans le texte des avis ;
+- filtres : pays, ville, note de l’entreprise, nombre d’avis, note de l’avis,
+  langue des avis, tri.
+
+Le type de résultat se déduit de la combinaison :
+
+| Saisie | Résultat |
+| --- | --- |
+| un domaine ou une URL | les avis de cette entreprise, filtrés (texte, note, langue, tri) |
+| un filtre d’avis (texte, note de l’avis, langue) | les entreprises de la source dont au moins un avis correspond, avec extraits |
+| sinon | la liste des entreprises de la source |
+
+La source est le secteur s’il est choisi (le nom saisi filtre alors ce
+secteur), sinon la recherche par mot-clé (ou, à défaut, le texte des avis).
+Exemple : secteur Banque & argent, France, 500 avis et +, avis 1 étoile
+contenant « frais ». Une carte d’entreprise ouvre ses avis avec les mêmes
+filtres ; le retour arrière revient à la liste.
 
 ## Lancer
 
@@ -28,6 +37,15 @@ npm start
 ```
 
 Puis ouvre http://127.0.0.1:8787
+
+Avec Docker (Chromium inclus) :
+
+```
+docker build -t trustpilot-scout .
+docker run -p 8787:8787 trustpilot-scout
+```
+
+Version en ligne : https://trustpilot.feitanx.com
 
 Variables utiles :
 
@@ -78,15 +96,14 @@ pays, catégories). Le reste n'est jamais transmis au navigateur.
 - Un domaine ou une URL collée (`https://www.fnac.com/…`) ouvre directement la
   fiche de l'entreprise ; les domaines accentués sont convertis en punycode.
 - Avis d'une entreprise : un domaine est essayé tel quel puis avec `www.` ; un
-  nom renvoie l'entreprise au nom identique (sinon la première trouvée) et
-  jusqu'à 5 autres candidates.
+  nom donne la liste des entreprises, dont chaque carte ouvre les avis.
 
 ### Recherche dans les avis
 
-`/review/{domaine}?search=<terme>&languages=all&sort=relevance` renvoie les avis
-contenant le terme (Trustpilot les entoure de `<em>`), avec un compteur total.
+`/review/{domaine}?search=<terme>&stars=<note>&languages=<langue>` renvoie les
+avis filtrés (Trustpilot entoure le terme de `<em>`), avec un compteur total.
 
-Le serveur explore les pages de résultats d'entreprises, interroge les avis de
+Le serveur explore les pages de la source (recherche ou secteur), interroge les avis de
 chacune et n'ajoute que celles qui ont au moins une correspondance. Un « état de
 scan » est mémorisé par critères : les requêtes suivantes (page 2, 3…) reprennent
 le même état, ne téléchargent que ce qui manque et partagent le travail en cours.
@@ -94,28 +111,25 @@ Le scan est borné par un budget temps et un nombre de pages, avec reprise possi
 
 ## API
 
-`GET /api/search?q=shop&stars=4.0&reviews=100&location=France&page=2`
+`GET /api/find?category=banking_money&country=FR&reviews=500&term=frais&rating=1&page=1`
 
-- `q` — mot-clé (obligatoire)
-- `stars` — `3.0`, `4.0` ou `4.5` (note minimale)
+Tous les paramètres sont facultatifs, mais il faut au moins `q`, `category` ou `term`.
+
+- `q` — entreprise : nom, mot-clé, domaine ou URL
+- `category` — identifiant de secteur Trustpilot (liste dans `/api/options`)
+- `country` — code pays (`FR`…), `city` — ville en texte libre
+- `stars` — `3.0`, `4.0` ou `4.5` (note minimale de l’entreprise)
 - `reviews` — `25`, `50`, `100`, `250` ou `500` (avis minimum)
-- `location` — pays ou ville en texte libre
+- `term` — texte cherché dans les avis, `rating` — note de l’avis (1 à 5),
+  `lang` — langue des avis (`all`, `fr`, `en`…)
+- `sort` — `relevance`, `reviews` ou `recent` (secteur ; avis d’une entreprise
+  hors `reviews`)
 - `page` — à partir de 1
 
-`GET /api/category?category=money_insurance&country=FR&location=Lyon&stars=4.0&sort=reviews_count&page=1`
-
-- `category` — identifiant de catégorie Trustpilot (liste dans `/api/options`)
-- `country` — code pays (`FR` par défaut)
-- `sort` — `most_relevant`, `reviews_count` ou `latest_review`
-
-`GET /api/company?q=fnac.com&term=retard&rating=1&lang=fr&sort=relevance&page=1`
-
-- `q` — nom, domaine ou URL de l'entreprise (obligatoire)
-- `term`, `rating` (1 à 5), `lang` (`all`, `fr`, `en`…), `sort` (`recency` ou `relevance`)
-- renvoie `business`, `alternatives` et les avis (`items`), 20 par page
-
-`GET /api/review-search?q=remboursement&page=1` — mêmes filtres que `/api/search`,
-tous facultatifs. Renvoie les entreprises avec `matchCount` et `snippets` (3 extraits max).
+Renvoie `kind` (`company`, `scan` ou `list`), `items` et `pagination`. Une
+collecte filtrée par le serveur (fouille des avis, ou nom et nombre d’avis
+appliqués à un secteur) renvoie `collected: true` et une pagination sur ce qui
+a été trouvé (`found`, `scannedBusinesses`, `totalBusinesses`, `partial`).
 
 `GET /api/health` — état du navigateur, du jeton et du cache.
 
@@ -129,10 +143,19 @@ tous facultatifs. Renvoie les entreprises avec `matchCount` et `snippets` (3 ext
 - Avis d'une entreprise : Trustpilot ne sert que 10 pages (200 avis) par
   combinaison de filtres ; au-delà, il exige une connexion.
 - Un délai d'~2 s au tout premier appel (démarrage du navigateur + challenge).
-- Mode « dans les avis » : la couverture dépend du nombre d'entreprises ramenées
+- Trustpilot ne filtre pas un secteur par nom ni par nombre d’avis : le
+  serveur parcourt alors le secteur page par page, avec le même budget que la
+  fouille des avis.
+- Fouille des avis : la couverture dépend du nombre d'entreprises ramenées
   par la recherche (plafonnée) ; chaque page utile coûte une requête par
   entreprise, d'où le cache et le budget. Un scan interrompu se reprend en
   relançant la page.
 
 Usage raisonnable : les données sont publiques, mais il s'agit de scraping sur
 des pages publiques ; garde le cache activé si tu automatises.
+
+Projet indépendant, sans lien avec Trustpilot.
+
+## Licence
+
+MIT, voir `LICENSE`.

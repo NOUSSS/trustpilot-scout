@@ -1,18 +1,20 @@
 import { CONFIG } from './config.js';
 import { pageProps } from './trustpilot.js';
 
-/** Échappe une valeur pour l'insérer dans un chemin d'URL Trustpilot. */
-export function reviewSearchPath(domain, term) {
-  const qs = new URLSearchParams({
-    search: term,
-    languages: 'all',
-    sort: 'relevance',
-  });
+/**
+ * Avis d'une entreprise filtrés par texte, note et langue. Avec un texte,
+ * Trustpilot entoure les correspondances de <em> et trie par pertinence.
+ */
+export function reviewFilterPath(domain, { term, rating, language }) {
+  const qs = new URLSearchParams({ languages: language || 'all' });
+  if (term) qs.set('search', term);
+  if (rating) qs.set('stars', rating);
+  qs.set('sort', term ? 'relevance' : 'recency');
   return `/review/${encodeURIComponent(domain)}?${qs.toString()}`;
 }
 
 /**
- * Lit une page de recherche d'avis : nombre total de correspondances + extraits.
+ * Lit une page d'avis filtrés : nombre total de correspondances + extraits.
  * Le texte renvoyé contient les balises <em> de surlignage de Trustpilot.
  */
 export function parseReviewSearch(html) {
@@ -37,27 +39,22 @@ export function parseReviewSearch(html) {
 }
 
 /**
- * Scanner incrémental : avance dans les pages de résultats d'entreprises,
- * interroge les avis de chaque entreprise et accumule les correspondances.
+ * Collecteur incrémental : avance dans les pages d'une source d'entreprises
+ * (recherche ou secteur), garde celles qui passent le filtre, puis, si besoin,
+ * interroge leurs avis et ne retient que celles qui ont une correspondance.
  * L'état est partagé entre requêtes identiques (une seule exploration).
+ *
+ * Un travail (`job`) fournit :
+ * - `loadPage(n)` → `{ items, pagination }` de la source ;
+ * - `keep(business)` → booléen, filtre appliqué par le serveur ;
+ * - `enrich(business)` (facultatif) → résultat ou null si rien ne correspond.
  */
-export class ReviewScans {
-  /**
-   * @param {(params) => Promise<{payload}>} loadBusinessPage page de résultats d'entreprises
-   * @param {(path: string) => Promise<{total, matches}>} loadReviewSearch avis filtrés (avec cache)
-   */
-  constructor(loadBusinessPage, loadReviewSearch) {
-    this.loadBusinessPage = loadBusinessPage;
-    this.loadReviewSearch = loadReviewSearch;
+export class Collector {
+  constructor() {
     this.states = new Map();
   }
 
-  key(criteria) {
-    return [criteria.query, criteria.trustscore, criteria.numberOfReviews, criteria.location].join('\u0001');
-  }
-
-  state(criteria) {
-    const key = this.key(criteria);
+  state(key) {
     let state = this.states.get(key);
     if (state && !state.running && Date.now() - state.updatedAt > CONFIG.reviewStateTtlMs) {
       this.states.delete(key);
@@ -72,11 +69,12 @@ export class ReviewScans {
       hits: [],
       seen: new Set(),
       scannedPages: 0,
+      scannedItems: 0,
       exhausted: false,
       partial: false,
       capped: false,
       error: null,
-      totalBusinesses: null,
+      totalSource: null,
       updatedAt: Date.now(),
       running: null,
     };
@@ -87,44 +85,39 @@ export class ReviewScans {
 
   prune() {
     if (this.states.size <= CONFIG.reviewStateMax) return;
-    const sorted = [...this.states.values()].sort((a, b) => a.updatedAt - b.updatedAt);
-    for (const state of sorted.slice(0, this.states.size - CONFIG.reviewStateMax)) {
+    const idle = [...this.states.values()].filter((s) => !s.running).sort((a, b) => a.updatedAt - b.updatedAt);
+    for (const state of idle.slice(0, this.states.size - CONFIG.reviewStateMax)) {
       this.states.delete(state.key);
     }
   }
 
-  /** Traite une page de résultats d'entreprises. */
-  async scanOnePage(state, criteria) {
+  /** Traite une page de la source. */
+  async scanOnePage(state, job) {
     const pageNumber = state.scannedPages + 1;
-    const { payload } = await this.loadBusinessPage({ ...criteria, page: pageNumber });
+    const payload = await job.loadPage(pageNumber);
 
     state.scannedPages = pageNumber;
-    if (state.totalBusinesses == null) state.totalBusinesses = payload.pagination.totalResults;
+    state.scannedItems += payload.items.length;
+    if (state.totalSource == null) state.totalSource = payload.pagination.totalResults;
     if (!payload.items.length || pageNumber >= payload.pagination.totalPages) state.exhausted = true;
 
-    const targets = payload.items.filter((b) => b.reviews > 0 && !state.seen.has(b.domain));
+    const targets = payload.items.filter((b) => !state.seen.has(b.domain) && job.keep(b));
     for (const b of targets) state.seen.add(b.domain);
 
-    // L'ordre de poussée suit l'ordre des entreprises pour une pagination stable.
-    const results = await Promise.all(
-      targets.map(async (business) => {
-        try {
-          const value = await this.loadReviewSearch(reviewSearchPath(business.domain, criteria.query));
-          return value.total ? { business, ...value } : null;
-        } catch {
-          return null;
-        }
-      })
-    );
+    // L'ordre de poussée suit l'ordre de la source pour une pagination stable.
+    const results = job.enrich
+      ? await Promise.all(
+          targets.map(async (business) => {
+            try {
+              return await job.enrich(business);
+            } catch {
+              return null;
+            }
+          })
+        )
+      : targets;
 
-    for (const hit of results) {
-      if (!hit) continue;
-      state.hits.push({
-        ...hit.business,
-        matchCount: hit.total,
-        snippets: hit.matches,
-      });
-    }
+    for (const hit of results) if (hit) state.hits.push(hit);
   }
 
   /**
@@ -132,8 +125,8 @@ export class ReviewScans {
    * Un scan arrêté par le budget reprend là où il s'était arrêté au prochain appel ;
    * seul le plafond de pages est définitif.
    */
-  async ensure(criteria, needed) {
-    const state = this.state(criteria);
+  async ensure(key, job, needed) {
+    const state = this.state(key);
     if (state.running) {
       await state.running.catch(() => {});
       return state;
@@ -154,7 +147,7 @@ export class ReviewScans {
           state.partial = true;
           break;
         }
-        await this.scanOnePage(state, criteria);
+        await this.scanOnePage(state, job);
       }
       if (
         !state.exhausted &&
@@ -166,7 +159,7 @@ export class ReviewScans {
     })();
     state.running
       .catch((err) => {
-        // Page d'entreprises introuvable : on garde ce qui a été trouvé, la suite se relance.
+        // Page de la source introuvable : on garde ce qui a été trouvé, la suite se relance.
         state.error = err;
         state.partial = true;
       })
@@ -179,8 +172,8 @@ export class ReviewScans {
     return state;
   }
 
-  /** État public pour une clé donnée (sans lancer de scan). */
-  peek(criteria) {
-    return this.states.get(this.key(criteria)) ?? null;
+  /** État pour une clé donnée (sans lancer de scan). */
+  peek(key) {
+    return this.states.get(key) ?? null;
   }
 }

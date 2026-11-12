@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 
 export const TRUST_SCORES = [
-  { value: '', label: 'Toutes les notes' },
+  { value: '', label: 'Toutes' },
   { value: '3.0', label: '3 étoiles et +' },
   { value: '4.0', label: '4 étoiles et +' },
   { value: '4.5', label: '4,5 étoiles et +' },
@@ -17,15 +17,8 @@ export const REVIEW_COUNTS = [
   { value: '500', label: '500 avis et +' },
 ];
 
-/** Tris proposés par les pages de catégories (les autres valeurs sont ignorées). */
-export const CATEGORY_SORTS = [
-  { value: 'most_relevant', label: 'Pertinence' },
-  { value: 'reviews_count', label: 'Nombre d’avis' },
-  { value: 'latest_review', label: 'Avis les plus récents' },
-];
-
 export const REVIEW_STARS = [
-  { value: '', label: 'Toutes les notes' },
+  { value: '', label: 'Toutes' },
   { value: '5', label: '5 étoiles' },
   { value: '4', label: '4 étoiles' },
   { value: '3', label: '3 étoiles' },
@@ -35,10 +28,17 @@ export const REVIEW_STARS = [
 
 export const REVIEW_LANGUAGES = ['all', 'fr', 'en', 'de', 'es', 'it', 'nl', 'pt', 'da', 'sv', 'pl'];
 
-export const REVIEW_SORTS = [
-  { value: 'recency', label: 'Plus récents' },
+/**
+ * Tris communs. Un secteur les accepte tous ; les avis d'une entreprise
+ * acceptent la pertinence et la date ; la recherche par mot-clé n'en a aucun.
+ */
+export const SORTS = [
   { value: 'relevance', label: 'Pertinence' },
+  { value: 'reviews', label: 'Nombre d’avis' },
+  { value: 'recent', label: 'Avis récents' },
 ];
+
+const CATEGORY_SORT = { relevance: 'most_relevant', reviews: 'reviews_count', recent: 'latest_review' };
 
 /** Marchés principaux de Trustpilot (codes ISO, noms traduits côté client). */
 export const COUNTRIES = [
@@ -55,10 +55,9 @@ export const CATEGORIES = JSON.parse(
 
 const TRUST_SET = new Set(TRUST_SCORES.map((o) => o.value).filter(Boolean));
 const REVIEW_SET = new Set(REVIEW_COUNTS.map((o) => o.value).filter(Boolean));
-const CATEGORY_SORT_SET = new Set(CATEGORY_SORTS.map((o) => o.value));
 const REVIEW_STAR_SET = new Set(REVIEW_STARS.map((o) => o.value).filter(Boolean));
 const REVIEW_LANG_SET = new Set(REVIEW_LANGUAGES);
-const REVIEW_SORT_SET = new Set(REVIEW_SORTS.map((o) => o.value));
+const SORT_SET = new Set(SORTS.map((o) => o.value));
 const COUNTRY_SET = new Set(COUNTRIES);
 const CATEGORY_SET = new Set(CATEGORIES.flatMap((c) => [c.id, ...c.sub.map((s) => s.id)]));
 
@@ -112,25 +111,6 @@ export function domainFrom(input) {
   return host;
 }
 
-/** Normalise et valide les paramètres entrants. */
-export function normalizeParams(searchParams) {
-  let query = clean(searchParams.get('q'), 120);
-  // Une URL collée devient son domaine : Trustpilot ouvre alors directement la fiche.
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(query)) query = domainFrom(query) ?? query;
-  const trustscore = clean(searchParams.get('stars'), 8);
-  const numberOfReviews = clean(searchParams.get('reviews'), 8);
-  const location = clean(searchParams.get('location'), 80);
-
-  if (trustscore && !TRUST_SET.has(trustscore)) {
-    throw new ValidationError(`Note invalide : ${trustscore}`);
-  }
-  if (numberOfReviews && !REVIEW_SET.has(numberOfReviews)) {
-    throw new ValidationError(`Nombre d'avis invalide : ${numberOfReviews}`);
-  }
-
-  return { query, trustscore, numberOfReviews, location, page: readPage(searchParams, MAX_PAGE) };
-}
-
 /**
  * Chemin de recherche canonique (sert aussi de clé de cache).
  * `semantic` active la recherche sémantique expérimentale de Trustpilot,
@@ -150,69 +130,114 @@ export function buildPath(params, { semantic = true } = {}) {
   return `/search?${qs.toString()}`;
 }
 
-/** Normalise les paramètres de la recherche dans les avis. */
-export function normalizeReviewParams(searchParams) {
-  const base = normalizeParams(searchParams);
-  const query = clean(searchParams.get('q'), 80);
-  if (query.length < 2) throw new ValidationError('Le terme cherché doit faire au moins 2 caractères');
-  return { ...base, query, page: readPage(searchParams, 50) };
-}
-
-/** Paramètres du mode « Par secteur ». */
-export function normalizeCategoryParams(searchParams) {
-  const category = clean(searchParams.get('category'), 80);
-  if (!category) throw new ValidationError('Choisis un secteur');
-  // Les secteurs fins (« bank », « cafe »…) ne sont pas listés mais existent : on laisse passer leur forme.
-  if (!CATEGORY_SET.has(category) && !/^[a-z0-9]+(?:_[a-z0-9]+)*$/.test(category)) {
-    throw new ValidationError(`Secteur inconnu : ${category}`);
-  }
-
-  const country = clean(searchParams.get('country'), 2).toUpperCase() || 'FR';
-  if (!COUNTRY_SET.has(country)) throw new ValidationError(`Pays invalide : ${country}`);
-
-  const trustscore = clean(searchParams.get('stars'), 8);
-  if (trustscore && !TRUST_SET.has(trustscore)) throw new ValidationError(`Note invalide : ${trustscore}`);
-
-  const sort = clean(searchParams.get('sort'), 20) || 'most_relevant';
-  if (!CATEGORY_SORT_SET.has(sort)) throw new ValidationError(`Tri invalide : ${sort}`);
-
-  return {
-    category,
-    country,
-    location: clean(searchParams.get('location'), 80),
-    trustscore,
-    sort,
-    page: readPage(searchParams, MAX_PAGE),
-  };
-}
-
 export function buildCategoryPath(params) {
   const qs = new URLSearchParams();
-  qs.set('country', params.country);
+  if (params.country) qs.set('country', params.country);
   if (params.location) qs.set('location', params.location);
   if (params.trustscore) qs.set('trustscore', params.trustscore);
-  if (params.sort && params.sort !== 'most_relevant') qs.set('sort', params.sort);
+  const sort = CATEGORY_SORT[params.sort];
+  if (sort && sort !== 'most_relevant') qs.set('sort', sort);
   if (params.page > 1) qs.set('page', String(params.page));
   return `/categories/${params.category}?${qs.toString()}`;
 }
 
-/** Paramètres du mode « Avis d'une entreprise ». */
-export function normalizeCompanyParams(searchParams) {
-  const company = clean(searchParams.get('q'), 300);
-  if (!company) throw new ValidationError('Indique une entreprise : nom, domaine ou URL');
+const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
+
+/**
+ * Normalise et valide les paramètres de la recherche unifiée, et en déduit le
+ * type de résultat :
+ * - `company` : un domaine ou une URL, ses avis filtrés ;
+ * - `scan` : un filtre d'avis (texte, note de l'avis, langue), les entreprises
+ *   de la source dont au moins un avis correspond ;
+ * - `list` : les entreprises de la source.
+ * La source est le secteur s'il est choisi, sinon la recherche (ou, à défaut,
+ * le texte des avis comme mot-clé).
+ */
+export function normalizeFindParams(searchParams) {
+  const q = clean(searchParams.get('q'), 300);
+  const domain = domainFrom(q);
+
+  const category = clean(searchParams.get('category'), 80);
+  // Les secteurs fins (« bank », « cafe »…) ne sont pas listés mais existent : on laisse passer leur forme.
+  if (category && !CATEGORY_SET.has(category) && !/^[a-z0-9]+(?:_[a-z0-9]+)*$/.test(category)) {
+    throw new ValidationError(`Secteur inconnu : ${category}`);
+  }
+
+  const country = clean(searchParams.get('country'), 2).toUpperCase();
+  if (country && !COUNTRY_SET.has(country)) throw new ValidationError(`Pays invalide : ${country}`);
+  const city = clean(searchParams.get('city'), 80);
+
+  const trustscore = clean(searchParams.get('stars'), 8);
+  if (trustscore && !TRUST_SET.has(trustscore)) throw new ValidationError(`Note invalide : ${trustscore}`);
+  const numberOfReviews = clean(searchParams.get('reviews'), 8);
+  if (numberOfReviews && !REVIEW_SET.has(numberOfReviews)) {
+    throw new ValidationError(`Nombre d'avis invalide : ${numberOfReviews}`);
+  }
 
   const term = clean(searchParams.get('term'), 80);
+  if (term && term.length < 2) {
+    throw new ValidationError('Le texte cherché dans les avis doit faire au moins 2 caractères');
+  }
   const rating = clean(searchParams.get('rating'), 1);
-  if (rating && !REVIEW_STAR_SET.has(rating)) throw new ValidationError(`Note invalide : ${rating}`);
+  if (rating && !REVIEW_STAR_SET.has(rating)) throw new ValidationError(`Note d'avis invalide : ${rating}`);
   const language = clean(searchParams.get('lang'), 5) || 'all';
   if (!REVIEW_LANG_SET.has(language)) throw new ValidationError(`Langue invalide : ${language}`);
-  // Sans terme, la pertinence n'a pas de sens : Trustpilot trie alors par date.
-  let sort = clean(searchParams.get('sort'), 12) || 'recency';
-  if (!REVIEW_SORT_SET.has(sort)) throw new ValidationError(`Tri invalide : ${sort}`);
-  if (!term) sort = 'recency';
+  const sort = clean(searchParams.get('sort'), 12) || 'relevance';
+  if (!SORT_SET.has(sort)) throw new ValidationError(`Tri invalide : ${sort}`);
 
-  return { company, term, rating, language, sort, page: readPage(searchParams, MAX_REVIEW_PAGE) };
+  const kind = domain ? 'company' : term || rating || language !== 'all' ? 'scan' : 'list';
+  if (kind !== 'company' && !q && !category && !term) {
+    throw new ValidationError('Indique une entreprise, un secteur ou un texte à chercher dans les avis');
+  }
+  const maxPage = kind === 'company' ? MAX_REVIEW_PAGE : MAX_PAGE;
+
+  return {
+    kind, q, domain, category, country, city, trustscore, numberOfReviews,
+    term, rating, language, sort, page: readPage(searchParams, maxPage),
+  };
 }
+
+/** Filtres que Trustpilot ne sait pas appliquer à un secteur : le serveur s'en charge. */
+export const needsServerFilter = (p) => Boolean(p.category && (p.q || p.numberOfReviews));
+
+/** Paramètres de la recherche Trustpilot qui sert de source. */
+export function searchSource(p) {
+  let location = p.city;
+  if (!location && p.country) {
+    try {
+      location = regionNames.of(p.country);
+    } catch {
+      location = '';
+    }
+  }
+  return {
+    query: (p.q || p.term).slice(0, 120),
+    trustscore: p.trustscore,
+    numberOfReviews: p.numberOfReviews,
+    location,
+    page: 1,
+  };
+}
+
+/** Paramètres de la page de secteur qui sert de source. */
+export const categorySource = (p) => ({
+  category: p.category,
+  country: p.country,
+  location: p.city,
+  trustscore: p.trustscore,
+  sort: p.sort,
+  page: 1,
+});
+
+/** Paramètres de la page d'avis d'une entreprise. */
+export const companyReviewParams = (p) => ({
+  term: p.term,
+  rating: p.rating,
+  language: p.language,
+  // Sans texte cherché, la pertinence n'a pas de sens : Trustpilot trie alors par date.
+  sort: p.term && p.sort === 'relevance' ? 'relevance' : 'recency',
+  page: p.page,
+});
 
 export function buildCompanyPath(domain, params) {
   const qs = new URLSearchParams();

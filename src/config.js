@@ -36,6 +36,15 @@ export function findBrowser() {
   const explicit = process.env.TP_BROWSER_PATH || process.env.CHROME_PATH;
   if (explicit && fs.existsSync(explicit)) return explicit;
 
+  for (const full of [
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/microsoft-edge',
+  ]) {
+    if (fs.existsSync(full)) return full;
+  }
+
   const roots = [
     process.env['ProgramFiles'],
     process.env['ProgramFiles(x86)'],

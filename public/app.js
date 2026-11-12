@@ -3,18 +3,19 @@ const $ = (sel) => document.querySelector(sel);
 const els = {
   form: $('#filters'),
   q: $('#q'),
-  qLabel: $('#q-label'),
   category: $('#category'),
+  categoryInput: $('#category-input'),
+  categoryList: $('#category-list'),
+  advanced: $('#advanced'),
+  advancedCount: $('#advanced-count'),
   term: $('#term'),
   country: $('#country'),
+  city: $('#city'),
   stars: $('#stars'),
   reviews: $('#reviews'),
-  location: $('#location'),
-  locationLabel: $('#location-label'),
-  sort: $('#sort'),
   rating: $('#rating'),
   lang: $('#lang'),
-  rsort: $('#rsort'),
+  sort: $('#sort'),
   submit: $('#submit'),
   submitLabel: $('#submit span'),
   export: $('#export'),
@@ -24,74 +25,21 @@ const els = {
   countLabel: $('#count-label'),
   meta: $('#meta'),
   hint: $('#hint'),
-  status: $('#status'),
-  statusText: $('#status-text'),
 };
 
-/**
- * Chaque mode : point d'API, champs envoyés (nom d'API → élément) et textes.
- * Les champs absents d'un mode sont masqués (attribut data-modes du HTML).
- */
-const MODES = {
-  business: {
-    endpoint: '/api/search',
-    fields: { q: 'q', stars: 'stars', reviews: 'reviews', location: 'location' },
-    required: 'q',
-    qLabel: 'Recherche',
-    placeholder: 'nom, domaine ou mot-clé (ex. vpn, boulangerie paris, fnac.com)',
-    locationLabel: 'Localisation',
-    locationPlaceholder: 'pays ou ville (ex. France)',
-    hint: 'Trustpilot plafonne le filtre d’avis à <b>500+</b> et propose les notes minimales de <b>3, 4 et 4,5</b>. Pour un volume précis, affinez ensuite à l’export.',
-    idle: 'Saisis un nom, un domaine ou un mot-clé (boutique, vpn, banque…), choisis une note minimale et un volume d’avis, puis lance la recherche.',
-    busy: 'Recherche…',
-    countLabel: 'entreprise(s) trouvée(s)',
-  },
-  category: {
-    endpoint: '/api/category',
-    fields: { category: 'category', country: 'country', stars: 'stars', location: 'location', sort: 'sort' },
-    required: 'category',
-    locationLabel: 'Ville',
-    locationPlaceholder: 'facultatif (ex. Lyon)',
-    hint: 'Les secteurs sont ceux de Trustpilot. Pas de tri par note : filtre avec la <b>note minimale</b>, puis trie par <b>nombre d’avis</b>.',
-    idle: 'Choisis un secteur et un pays : les entreprises s’affichent dans l’ordre choisi.',
-    busy: 'Recherche…',
-    countLabel: 'entreprise(s) dans ce secteur',
-  },
-  company: {
-    endpoint: '/api/company',
-    fields: { q: 'q', term: 'term', rating: 'rating', lang: 'lang', sort: 'rsort' },
-    required: 'q',
-    qLabel: 'Entreprise',
-    placeholder: 'nom, domaine ou URL (ex. fnac.com)',
-    hint: 'Un nom renvoie l’entreprise la plus proche, avec les autres candidates. Trustpilot n’affiche que <b>10 pages</b> d’avis par recherche : filtre par note ou par mot pour aller plus loin.',
-    idle: 'Saisis le nom, le domaine ou l’URL d’une entreprise, puis filtre ses avis par mot, note ou langue.',
-    busy: 'Chargement…',
-    countLabel: 'avis',
-  },
-  reviews: {
-    endpoint: '/api/review-search',
-    fields: { q: 'q', stars: 'stars', reviews: 'reviews', location: 'location' },
-    required: 'q',
-    qLabel: 'Recherche',
-    placeholder: 'mot ou phrase cherchée dans le texte des avis (ex. remboursement, colis perdu)',
-    locationLabel: 'Localisation',
-    locationPlaceholder: 'pays ou ville (ex. France)',
-    hint: 'Les entreprises sont parcourues une à une et leurs avis interrogés : <b>compte quelques secondes</b>. Les filtres de note et d’avis sont facultatifs.',
-    idle: 'Saisis un mot ou une phrase : chaque entreprise trouvée est ensuite fouillée dans tous ses avis.',
-    busy: 'Scan…',
-    countLabel: 'entreprise(s) avec avis correspondants',
-  },
-};
+/** Paramètres d'API, chacun lié au champ du même nom. Tous se combinent. */
+const FIELDS = ['q', 'category', 'term', 'country', 'city', 'stars', 'reviews', 'rating', 'lang', 'sort'];
+/** Champs repliés sous « Options avancées ». */
+const ADVANCED = ['country', 'city', 'stars', 'reviews', 'rating', 'lang', 'sort'];
+/** Valeurs par défaut, omises de l'URL. */
+const DEFAULTS = { lang: 'all', sort: 'relevance' };
 
 const state = {
-  mode: 'business',
   page: 1,
   params: null,
   data: null,
   controller: null,
 };
-
-const mode = () => MODES[state.mode];
 
 const O = (tag, cls, text) => {
   const el = document.createElement(tag);
@@ -114,6 +62,9 @@ const highlighted = (s) =>
   escapeHtml(s).replace(/&lt;em&gt;/g, '<mark>').replace(/&lt;\/em&gt;/g, '</mark>');
 
 const plain = (s) => String(s ?? '').replace(/<\/?em>/g, '');
+
+/** Guillemets français, espaces insécables comprises. */
+const quoted = (s) => `« ${s} »`;
 
 const regionNames = new Intl.DisplayNames(['fr'], { type: 'region' });
 const languageNames = new Intl.DisplayNames(['fr'], { type: 'language' });
@@ -148,83 +99,118 @@ const nf = (n) => Number(n ?? 0).toLocaleString('fr-FR');
 
 /* ---------- Options ---------- */
 const categoryNames = new Map();
+/** Secteurs à plat, dans l'ordre de Trustpilot : chaque secteur suivi de ses sous-secteurs. */
+const categories = [];
+const labels = { stars: new Map(), reviews: new Map(), rating: new Map(), sort: new Map() };
 
 async function loadOptions() {
   try {
     const res = await fetch('/api/options');
     const data = await res.json();
 
-    for (const o of data.stars) els.stars.append(option(o.value, o.label));
-    els.stars.value = '4.0';
-    for (const o of data.reviews) els.reviews.append(option(o.value, o.label));
-    els.reviews.value = '';
+    const fill = (el, list, key) => {
+      for (const o of list) {
+        el.append(option(o.value, o.label));
+        labels[key]?.set(o.value, o.label);
+      }
+    };
+    fill(els.stars, data.stars, 'stars');
+    fill(els.reviews, data.reviews, 'reviews');
+    fill(els.rating, data.reviewStars, 'rating');
+    fill(els.sort, data.sorts, 'sort');
 
     for (const top of data.categories) {
       categoryNames.set(top.id, top.name);
-      const group = O('optgroup');
-      group.label = top.name;
-      group.append(option(top.id, `${top.name} (tout le secteur)`));
+      categories.push({ id: top.id, name: top.name, group: true, key: fold(top.name) });
       for (const sub of top.sub) {
         categoryNames.set(sub.id, sub.name);
-        group.append(option(sub.id, sub.name));
+        categories.push({ id: sub.id, name: sub.name, parent: top.name, key: fold(`${sub.name} ${top.name}`) });
       }
-      els.category.append(group);
     }
 
     const countries = data.countries
       .map((code) => ({ code, name: countryName(code) }))
       .sort((a, b) => a.name.localeCompare(b.name, 'fr'));
     for (const c of countries) els.country.append(option(c.code, c.name));
-    els.country.value = 'FR';
 
-    for (const o of data.categorySorts) els.sort.append(option(o.value, o.label));
-    for (const o of data.reviewStars) els.rating.append(option(o.value, o.label));
     for (const code of data.reviewLanguages) {
-      els.lang.append(option(code, code === 'all' ? 'Toutes les langues' : languageName(code)));
+      els.lang.append(option(code, code === 'all' ? 'Toutes' : languageName(code)));
     }
-    for (const o of data.reviewSorts) els.rsort.append(option(o.value, o.label));
   } catch {
     /* les selects restent vides, la recherche par mot-clé fonctionne quand même */
   }
 }
 
-async function health() {
+/* ---------- Combinaison des paramètres ---------- */
+/** Même règle que le serveur (`domainFrom`) : une saisie sans espace avec une extension. */
+function looksLikeDomain(input) {
+  const raw = String(input ?? '').trim();
+  if (!raw || /\s/.test(raw)) return false;
   try {
-    const res = await fetch('/api/health');
-    const data = await res.json();
-    els.status.className = 'tag status' + (data.authenticated ? ' on' : '');
-    els.statusText.textContent = data.authenticated
-      ? `Prêt · cache ${data.cache}`
-      : data.browser
-        ? 'Session en cours…'
-        : 'Navigateur arrêté';
+    const host = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`).hostname;
+    return /^[a-z0-9.-]+\.[a-z]{2,}\.?$/i.test(host) || /^xn--/.test(host.split('.').pop());
   } catch {
-    els.status.className = 'tag status off';
-    els.statusText.textContent = 'Serveur injoignable';
+    return false;
   }
 }
 
-/* ---------- Mode ---------- */
-function setMode(name, { resetFilters = false } = {}) {
-  state.mode = name;
-  const m = mode();
-  for (const btn of document.querySelectorAll('.mode')) {
-    btn.setAttribute('aria-selected', String(btn.dataset.mode === name));
+/**
+ * Type de résultat, comme le serveur : un domaine montre ses avis ; un filtre
+ * d'avis fouille les avis des entreprises ; sinon, la liste des entreprises.
+ */
+function kindOf(p) {
+  if (looksLikeDomain(p.q)) return 'company';
+  // Comme le serveur : sans entreprise, secteur ni texte, il n'y a rien à fouiller.
+  if (!p.q && !p.category && !p.term) return null;
+  if (p.term || p.rating || (p.lang && p.lang !== 'all')) return 'scan';
+  return 'list';
+}
+
+/** Grise les champs sans effet sur la combinaison en cours, plutôt que de les cacher. */
+function updateFields(p) {
+  const kind = kindOf(p);
+  const company = kind === 'company';
+  for (const el of [els.categoryInput, els.country, els.city, els.stars, els.reviews]) el.disabled = company;
+  if (company) closeCombo();
+  // Trustpilot ne trie que les secteurs et les avis d'une entreprise.
+  els.sort.disabled = !company && !p.category;
+  for (const opt of els.sort.options) opt.disabled = company && opt.value === 'reviews';
+  els.hint.textContent = describe(p);
+  const active = ADVANCED.filter((name) => p[name] && p[name] !== (DEFAULTS[name] ?? '')).length;
+  els.advancedCount.textContent = active ? String(active) : '';
+}
+
+/** La combinaison en une phrase : ce que la recherche va réellement faire. */
+function describe(p) {
+  const kind = kindOf(p);
+  if (!kind) return 'Renseigne une entreprise, un secteur ou un texte à chercher dans les avis, puis combine les filtres.';
+
+  const reviewParts = [];
+  if (p.term) reviewParts.push(`contenant ${quoted(p.term)}`);
+  if (p.rating) reviewParts.push(`notés ${labels.rating.get(p.rating)?.toLowerCase() ?? p.rating}`);
+  if (p.lang && p.lang !== 'all') reviewParts.push(`en ${languageName(p.lang).toLowerCase()}`);
+  const sortLabel = labels.sort.get(p.sort)?.toLowerCase();
+
+  if (kind === 'company') {
+    const sorted = p.term && p.sort === 'relevance' ? 'par pertinence' : 'du plus récent au plus ancien';
+    return [`Avis de ${p.q.trim()}`, ...reviewParts].join(', ') + `, ${sorted}.`;
   }
-  for (const field of document.querySelectorAll('[data-modes]')) {
-    field.hidden = !field.dataset.modes.split(' ').includes(name);
-  }
-  if (m.qLabel) els.qLabel.textContent = m.qLabel;
-  if (m.placeholder) els.q.placeholder = m.placeholder;
-  if (m.locationLabel) {
-    els.locationLabel.textContent = m.locationLabel;
-    els.location.placeholder = m.locationPlaceholder;
-  }
-  els.hint.innerHTML = m.hint;
-  if (resetFilters && name === 'reviews') {
-    els.stars.value = '';
-    els.reviews.value = '';
-  }
+
+  const parts = ['Entreprises'];
+  if (p.category) parts.push(`du secteur ${categoryNames.get(p.category) ?? p.category}`);
+  if (p.q) parts.push(p.category ? `dont le nom contient ${quoted(p.q)}` : `trouvées pour ${quoted(p.q)}`);
+  else if (!p.category) parts.push(`trouvées pour ${quoted(p.term)}`);
+  const place = [p.city, countryName(p.country)].filter(Boolean).join(', ');
+  let sentence = parts.join(' ') + (place ? ` (${place})` : '');
+  const extra = [];
+  if (p.stars) extra.push(`notées ${labels.stars.get(p.stars)?.toLowerCase() ?? p.stars}`);
+  if (p.reviews) extra.push(labels.reviews.get(p.reviews) ?? `${p.reviews} avis et +`);
+  if (extra.length) sentence += `, ${extra.join(', ')}`;
+  if (kind === 'scan') sentence += `, qui ont des avis ${reviewParts.join(', ')}`;
+  if (p.category && sortLabel) sentence += `, triées par ${sortLabel}`;
+  sentence += '.';
+  if (kind === 'scan') sentence += ' Les avis de chaque entreprise sont interrogés un à un : compte quelques secondes.';
+  return sentence;
 }
 
 /* ---------- Rendu ---------- */
@@ -259,16 +245,46 @@ const external = (a, href) => {
   return a;
 };
 
+/** URL de la recherche courante avec d'autres valeurs (paramètres vides ou par défaut omis). */
+function searchUrl(params, page = 1) {
+  const url = new URL(location.href);
+  url.search = '';
+  for (const name of FIELDS) {
+    const value = params?.[name];
+    if (value && value !== DEFAULTS[name]) url.searchParams.set(name, value);
+  }
+  if (page > 1) url.searchParams.set('page', String(page));
+  return url;
+}
+
+/**
+ * Lien interne vers les avis d'une entreprise : mêmes filtres, entreprise
+ * remplacée par son domaine. Un clic simple reste dans la page (historique
+ * conservé), un clic molette ouvre un onglet.
+ */
+function companyLink(a, domain) {
+  a.href = searchUrl({ ...state.params, q: domain }).href;
+  a.addEventListener('click', (e) => {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    history.pushState(null, '', a.href);
+    loadFromUrl();
+  });
+  return a;
+}
+
 function avatarFor(item) {
   const avatar = O('span', 'avatar');
   avatar.textContent = (item.name || item.domain || '?').trim().charAt(0).toUpperCase();
   if (item.id) {
+    // L'image doit être dans la page dès le départ : une image « lazy » détachée n'est jamais chargée.
     const img = new Image();
     img.loading = 'lazy';
     img.alt = '';
-    img.src = `https://consumersiteimages.trustpilot.net/business-units/${item.id}-198x149-1x.avif`;
-    img.onload = () => { avatar.textContent = ''; avatar.append(img); };
+    img.onload = () => avatar.classList.add('has-logo');
     img.onerror = () => img.remove();
+    img.src = `https://consumersiteimages.trustpilot.net/business-units/${item.id}-198x149-1x.avif`;
+    avatar.append(img);
   }
   return avatar;
 }
@@ -305,8 +321,9 @@ function tagsFor(item) {
   return tags;
 }
 
+/** Carte d'entreprise : ouvre ses avis, avec les filtres d'avis en cours. */
 function businessCard(item) {
-  const a = external(O('a', 'card'), item.url);
+  const a = companyLink(O('a', 'card'), item.domain);
   const top = O('div', 'card-top');
   const title = O('span', 'card-title');
   title.append(O('strong', null, item.name || item.domain), O('small', null, item.domain));
@@ -321,11 +338,11 @@ function scanCard(item) {
   const top = O('div', 'card-top');
   const title = O('span', 'card-title');
   const strong = O('strong');
-  strong.append(external(O('a', null, item.name || item.domain), item.url));
+  strong.append(companyLink(O('a', null, item.name || item.domain), item.domain));
   title.append(strong, O('small', null, item.domain));
 
   const badge = O('span', 'tag tag-primary matches', `${nf(item.matchCount)} avis`);
-  badge.title = 'Nombre d’avis contenant le terme';
+  badge.title = 'Nombre d’avis qui correspondent';
   top.append(avatarFor(item), title, badge);
   card.append(top);
 
@@ -347,8 +364,8 @@ function scanCard(item) {
   return card;
 }
 
-/** Fiche de l'entreprise en tête des avis, avec les autres candidates. */
-function companyCard(business, alternatives) {
+/** Fiche de l'entreprise en tête de ses avis. */
+function companyCard(business) {
   const card = O('article', 'card company');
 
   const top = O('div', 'card-top');
@@ -361,26 +378,6 @@ function companyCard(business, alternatives) {
   const main = O('div', 'company-main');
   main.append(top, ratingLine(business), tagsFor(business));
   card.append(main);
-
-  if (alternatives.length) {
-    const alts = O('div', 'alts');
-    alts.append(O('span', 'alts-label', 'Pas la bonne entreprise ?'));
-    const list = O('div', 'alts-list');
-    for (const alt of alternatives) {
-      // Le domaine distingue les homonymes (« Darty » : darty.com, darty.be…).
-      const b = O('button', 'tag alt', alt.domain || alt.name);
-      b.type = 'button';
-      if (alt.name) b.title = alt.name;
-      b.addEventListener('click', () => {
-        els.q.value = alt.domain;
-        state.params = readForm();
-        go(1);
-      });
-      list.append(b);
-    }
-    alts.append(list);
-    card.append(alts);
-  }
   return card;
 }
 
@@ -421,7 +418,7 @@ const SKELETON_ITEM = {
   matchCount: 0,
   snippets: [1, 2, 3].map(() => ({ text: `${NB}\n${NB}\n${NB}`, rating: NB, author: NB, url: '#' })),
 };
-// Mode avis : le badge réduit la largeur, chaque rangée a au moins un nom sur deux lignes.
+// Fouille des avis : le badge réduit la largeur, chaque rangée a au moins un nom sur deux lignes.
 const SKELETON_SCAN_ITEM = { ...SKELETON_ITEM, name: `${NB}\n${NB}` };
 // Fiche entreprise : pays et un secteur, sur une seule rangée de tags.
 const SKELETON_COMPANY = { ...SKELETON_ITEM, categories: [NB] };
@@ -431,9 +428,6 @@ const SKELETON_REVIEW = {
   text: [NB, NB, NB, NB].join('\n'), language: '', replied: false, url: '#',
 };
 
-/** Une saisie sans espace avec un point est un domaine : pas de candidates. */
-const looksLikeDomain = (s) => /^\S+\.\S{2,}$/.test(s.trim());
-
 function skeletonize(card) {
   card.classList.add('is-skeleton');
   card.setAttribute('aria-hidden', 'true');
@@ -441,26 +435,21 @@ function skeletonize(card) {
   return card;
 }
 
-function skeletons(n = 6) {
+function skeletons(kind, n = 6) {
   const grid = O('div', 'grid');
   grid.setAttribute('aria-busy', 'true');
-  if (state.mode === 'company') {
+  if (kind === 'company') {
     // Même entreprise qu'à l'affichage précédent (page, filtre) : sa fiche est connue.
-    const known = state.data?.business && state.data.params?.company === state.params?.q ? state.data : null;
-    let company;
-    if (known) {
-      company = companyCard(known.business, known.alternatives ?? []);
-    } else {
-      const alts = looksLikeDomain(state.params?.q ?? '') ? [] : [1, 2, 3].map(() => ({ name: NB.repeat(12) }));
-      company = skeletonize(companyCard(SKELETON_COMPANY, alts));
-    }
+    const known =
+      state.data?.kind === 'company' && state.data.params?.q === state.params?.q ? state.data : null;
+    const company = known ? companyCard(known.business) : skeletonize(companyCard(SKELETON_COMPANY));
     grid.classList.add('reviews-grid');
     for (let i = 0; i < n; i++) grid.append(skeletonize(reviewCard(SKELETON_REVIEW)));
     els.results.replaceChildren(company, grid);
     return;
   }
   for (let i = 0; i < n; i++) {
-    const card = state.mode === 'reviews' ? scanCard(SKELETON_SCAN_ITEM) : businessCard(SKELETON_ITEM);
+    const card = kind === 'scan' ? scanCard(SKELETON_SCAN_ITEM) : businessCard(SKELETON_ITEM);
     grid.append(skeletonize(card));
   }
   els.results.replaceChildren(grid);
@@ -490,7 +479,9 @@ function renderPager(p) {
       prev = n;
     }
   } else {
-    for (let i = Math.max(1, p.page - 2); i <= p.page + 2; i++) {
+    // Collecte : seules les pages déjà trouvées, plus la suivante si le scan peut continuer.
+    const last = Math.ceil(p.found / p.perPage) + (p.hasNext && p.found <= p.page * p.perPage ? 1 : 0);
+    for (let i = Math.max(1, p.page - 2); i <= Math.min(p.page + 2, Math.max(last, p.page)); i++) {
       pager.append(pagerButton(String(i), i, { current: i === p.page, disabled: i === p.page }));
     }
   }
@@ -522,23 +513,26 @@ function renderPager(p) {
 
 const cacheLabel = (c) => (c === 'hit' ? 'cache' : c === 'shared' ? 'requête partagée' : 'réseau');
 
-function renderBusiness(data) {
+/** Méta d'une collecte : avancement du parcours de la source. */
+function scanMeta(p) {
+  const total = p.totalBusinesses != null ? nf(p.totalBusinesses) : '?';
+  return `page ${p.page} · ${nf(p.scannedBusinesses)} entreprises parcourues / ${total}` +
+    (p.partial ? ' · parcours interrompu' : '');
+}
+
+function renderList(data) {
   const p = data.pagination;
-  const parts = [`page ${p.page} / ${p.totalPages}`];
-  if (state.mode === 'category') {
-    parts.push(categoryNames.get(data.params.category) ?? data.category?.name ?? data.params.category);
-    parts.push(countryName(data.params.country));
-  }
-  parts.push(cacheLabel(data.cache));
-  els.meta.textContent = parts.join(' · ');
+  els.meta.textContent = data.collected
+    ? scanMeta(p)
+    : `page ${p.page} / ${Math.max(p.totalPages, 1)} · ${cacheLabel(data.cache)}`;
 
   if (!data.items.length) {
     els.results.replaceChildren(
       stateBox(
         'inbox',
         'Aucun résultat',
-        state.mode === 'category'
-          ? 'Change de pays, retire la ville ou baisse la note minimale.'
+        data.params.category
+          ? 'Change de pays, retire la ville ou le nom, ou baisse la note et le nombre d’avis exigés.'
           : 'Élargis la recherche, baisse la note minimale ou réduis le nombre d’avis exigé.'
       )
     );
@@ -553,7 +547,7 @@ function renderCompany(data) {
   const p = data.pagination;
   els.meta.textContent = `page ${p.page} / ${Math.max(p.totalPages, 1)} · ${cacheLabel(data.cache)}`;
 
-  const company = companyCard(data.business, data.alternatives ?? []);
+  const company = companyCard(data.business);
   if (!data.items.length) {
     const filtered = data.params.term || data.params.rating || data.params.language !== 'all';
     els.results.replaceChildren(
@@ -575,20 +569,18 @@ function renderCompany(data) {
 
 function renderScan(data) {
   const p = data.pagination;
-  const scanned = nf(p.scannedBusinesses);
-  const total = p.totalBusinesses ? nf(p.totalBusinesses) : '?';
-  els.meta.textContent = `page ${p.page} · ${scanned} entreprises scannées / ${total}` + (p.partial ? ' · scan interrompu' : '');
+  els.meta.textContent = scanMeta(p);
 
   if (!data.items.length) {
     const box = stateBox(
       'inbox',
       p.hasNext ? 'Recherche en cours…' : 'Aucun avis ne correspond',
       p.hasNext
-        ? 'Le scan continue sur les entreprises suivantes. Relance la même page dans quelques secondes.'
-        : 'Essaie un terme plus large, ou retire les filtres de note et de nombre d’avis.'
+        ? 'Le parcours continue sur les entreprises suivantes. Relance la même page dans quelques secondes.'
+        : 'Essaie un texte plus large, une autre note d’avis, ou retire des filtres d’entreprise.'
     );
     if (p.hasNext) {
-      const next = O('button', 'btn', 'Continuer le scan');
+      const next = O('button', 'btn', 'Continuer');
       next.type = 'button';
       next.addEventListener('click', () => go(p.page));
       box.append(next);
@@ -600,34 +592,41 @@ function renderScan(data) {
   const grid = O('div', 'grid');
   for (const item of data.items) grid.append(scanCard(item));
   els.results.replaceChildren(grid, renderPager(p));
-
-  if (p.partial) {
-    const line = O('div', 'tag tag-warning scanline');
-    line.append(O('span', 'dot'), O('span', null, 'Scan interrompu par le budget : relance pour continuer plus loin.'));
-    els.results.append(line);
-  }
 }
+
+const COUNT_LABELS = {
+  list: 'entreprise(s) trouvée(s)',
+  scan: 'entreprise(s) avec avis correspondants',
+  company: 'avis',
+};
 
 function render(data) {
   state.data = data;
   els.head.hidden = false;
   els.export.disabled = data.items.length === 0;
-  els.countLabel.textContent = mode().countLabel;
+  els.countLabel.textContent = COUNT_LABELS[data.kind];
+  els.count.textContent = nf(data.collected ? data.pagination.found : data.pagination.totalResults);
 
-  if (state.mode === 'reviews') {
-    els.count.textContent = nf(data.pagination.found);
-    renderScan(data);
-  } else if (state.mode === 'company') {
-    els.count.textContent = nf(data.pagination.totalResults);
-    renderCompany(data);
-  } else {
-    els.count.textContent = nf(data.pagination.totalResults);
-    renderBusiness(data);
+  if (data.kind === 'scan') renderScan(data);
+  else if (data.kind === 'company') renderCompany(data);
+  else renderList(data);
+
+  // Collecte interrompue par le budget : on le dit sous les résultats.
+  if (data.collected && data.items.length && data.pagination.partial) {
+    const line = O('div', 'tag tag-warning scanline');
+    line.append(O('span', 'dot'), O('span', null, 'Parcours interrompu par le budget : relance pour aller plus loin.'));
+    els.results.append(line);
   }
 }
 
 function idleState() {
-  els.results.replaceChildren(stateBox('search', 'Commence par une recherche', mode().idle));
+  els.results.replaceChildren(
+    stateBox(
+      'search',
+      'Commence par une recherche',
+      'Une entreprise, un secteur, un texte d’avis : remplis ce que tu veux, tous les filtres se combinent.'
+    )
+  );
 }
 
 function errorState(message) {
@@ -642,37 +641,30 @@ function errorState(message) {
 }
 
 /* ---------- Requêtes ---------- */
-/** Valeurs des champs du mode courant, sous leur nom d'API. */
 function readForm() {
   const params = {};
-  for (const [name, key] of Object.entries(mode().fields)) {
-    params[name] = els[key].value.trim();
-  }
+  for (const name of FIELDS) params[name] = els[name].value.trim();
   return params;
 }
 
-/** Remplit les champs du mode courant depuis l'URL. */
+/** Remplit tous les champs depuis l'URL (valeur absente : défaut). */
 function fillForm(search) {
-  for (const [name, key] of Object.entries(mode().fields)) {
-    const value = search.get(name);
-    if (value == null) continue;
-    const el = els[key];
-    const previous = el.value;
+  for (const name of FIELDS) {
+    const el = els[name];
+    const value = search.get(name) ?? DEFAULTS[name] ?? '';
     el.value = value;
     // Valeur absente d'une liste : on garde le défaut plutôt qu'un select vide.
-    if (el.value !== value) el.value = previous;
+    if (el.value !== value) el.value = DEFAULTS[name] ?? '';
   }
+  // Secteur inconnu : on l'oublie plutôt que d'envoyer un identifiant invalide.
+  if (!categoryNames.has(els.category.value)) els.category.value = '';
+  els.categoryInput.value = categoryNames.get(els.category.value) ?? '';
+  // Un filtre avancé actif depuis l'URL reste visible.
+  if (ADVANCED.some((name) => els[name].value !== (DEFAULTS[name] ?? ''))) els.advanced.open = true;
 }
 
 function syncUrl() {
-  const url = new URL(location.href);
-  url.search = '';
-  if (state.mode !== 'business') url.searchParams.set('mode', state.mode);
-  for (const [name, value] of Object.entries(state.params ?? {})) {
-    if (value) url.searchParams.set(name, value);
-  }
-  if (state.page > 1) url.searchParams.set('page', String(state.page));
-  history.replaceState(null, '', url);
+  history.replaceState(null, '', searchUrl(state.params, state.page));
 }
 
 function resetSubmit(controller) {
@@ -684,16 +676,17 @@ function resetSubmit(controller) {
 async function go(page = 1, depth = 0) {
   const params = state.params ?? readForm();
   state.params = params;
-  const m = mode();
+  updateFields(params);
+  const kind = kindOf(params);
 
-  if (!params[m.required]) {
+  if (!kind) {
     state.controller?.abort();
     els.head.hidden = true;
     els.export.disabled = true;
     state.page = 1;
     syncUrl();
     idleState();
-    (state.mode === 'category' ? els.category : els.q).focus();
+    els.q.focus();
     return;
   }
 
@@ -705,27 +698,27 @@ async function go(page = 1, depth = 0) {
   state.controller = controller;
 
   els.submit.disabled = true;
-  els.submitLabel.textContent = m.busy;
+  els.submitLabel.textContent = kind === 'scan' ? 'Fouille…' : 'Recherche…';
   // L'en-tête reste en place pendant le chargement : la grille ne bouge pas à l'arrivée.
   els.head.hidden = false;
   els.count.textContent = '…';
-  els.countLabel.textContent = m.countLabel;
+  els.countLabel.textContent = COUNT_LABELS[kind];
   els.meta.textContent = NB;
-  skeletons();
+  skeletons(kind);
 
   const qs = new URLSearchParams({ page: String(page) });
   for (const [name, value] of Object.entries(params)) if (value) qs.set(name, value);
 
   try {
-    const res = await fetch(m.endpoint + '?' + qs, { signal: controller.signal });
+    const res = await fetch('/api/find?' + qs, { signal: controller.signal });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `Erreur ${res.status}`);
     if (state.controller !== controller) return;
     state.page = data.params?.page ?? page;
     syncUrl();
     render(data);
-    // Un scan interrompu par le budget sans aucun résultat : on relance (borné).
-    if (state.mode === 'reviews' && data.pagination.partial && !data.items.length && depth < 3) {
+    // Une collecte interrompue par le budget sans aucun résultat : on relance (borné).
+    if (data.collected && data.pagination.partial && !data.items.length && depth < 3) {
       resetSubmit(controller);
       return go(page, depth + 1);
     }
@@ -737,7 +730,22 @@ async function go(page = 1, depth = 0) {
     );
   } finally {
     resetSubmit(controller);
-    if (state.controller === controller) health();
+  }
+}
+
+/** Lit la recherche dans l'URL et la lance (chargement, retour arrière, lien interne). */
+function loadFromUrl() {
+  const search = new URLSearchParams(location.search);
+  fillForm(search);
+  state.params = readForm();
+  updateFields(state.params);
+  if (kindOf(state.params)) {
+    go(Math.max(1, Number.parseInt(search.get('page'), 10) || 1));
+  } else {
+    state.controller?.abort();
+    els.head.hidden = true;
+    els.export.disabled = true;
+    idleState();
   }
 }
 
@@ -748,7 +756,7 @@ function exportCsv() {
   const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
   let rows;
 
-  if (state.mode === 'company') {
+  if (data.kind === 'company') {
     rows = [['date', 'note', 'auteur', 'pays', 'langue', 'titre', 'texte', 'reponse', 'url']];
     for (const r of data.items) {
       rows.push([
@@ -756,7 +764,7 @@ function exportCsv() {
         plain(r.title), plain(r.text), r.replied ? 'oui' : 'non', r.url,
       ]);
     }
-  } else if (state.mode === 'reviews') {
+  } else if (data.kind === 'scan') {
     rows = [['nom', 'domaine', 'note', 'avis', 'correspondances', 'extraits', 'url']];
     for (const it of data.items) {
       rows.push([
@@ -776,16 +784,132 @@ function exportCsv() {
   const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  const p = state.params;
+  const p = data.params;
   const subject =
-    state.mode === 'company' ? data.business?.domain ?? p.q
-    : state.mode === 'category' ? `${p.category}-${p.country}`
-    : p.q;
-  const suffix = { company: '-avis', reviews: '-scan', category: '-secteur', business: '' }[state.mode];
+    data.kind === 'company' ? data.business?.domain ?? p.q
+    : [p.q, p.category, p.term, p.country].filter(Boolean).join('-');
+  const suffix = { company: '-avis', scan: '-fouille', list: '' }[data.kind];
   const slug = String(subject).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\W+/g, '-').slice(0, 40);
   a.download = `trustpilot-${slug}${suffix}-p${state.page}.csv`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 0);
+}
+
+/* ---------- Secteur : liste filtrée à la frappe ---------- */
+/** Minuscules sans accents, pour comparer « energie » et « Énergie ». */
+const fold = (s) => String(s).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+
+const combo = { matches: [], active: -1 };
+
+function closeCombo() {
+  els.categoryList.hidden = true;
+  els.categoryInput.setAttribute('aria-expanded', 'false');
+  els.categoryInput.removeAttribute('aria-activedescendant');
+  combo.active = -1;
+}
+
+/** Nom avec la partie tapée en gras (comparée sans accents, même longueur une fois repliée). */
+function markMatch(name, word) {
+  const at = word ? fold(name).indexOf(word) : -1;
+  if (at < 0 || fold(name).length !== name.length) return document.createTextNode(name);
+  const frag = document.createDocumentFragment();
+  frag.append(name.slice(0, at), O('mark', null, name.slice(at, at + word.length)), name.slice(at + word.length));
+  return frag;
+}
+
+function renderCombo(text) {
+  const words = fold(text).trim().split(/\s+/).filter(Boolean);
+  combo.matches = words.length
+    ? categories.filter((c) => words.every((w) => c.key.includes(w))).slice(0, 80)
+    : [{ id: '', name: 'Tous les secteurs', group: true }, ...categories];
+
+  const items = combo.matches.map((c, i) => {
+    const li = O('li', c.group ? 'group' : 'sub');
+    li.id = `category-opt-${i}`;
+    li.setAttribute('role', 'option');
+    li.setAttribute('aria-selected', String(c.id === els.category.value));
+    li.append(markMatch(c.name, words[0] ?? ''));
+    // Un sous-secteur trouvé hors de son groupe rappelle son parent.
+    if (words.length && c.parent) li.append(O('span', 'combo-parent', ` · ${c.parent}`));
+    li.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      pickCategory(c);
+    });
+    return li;
+  });
+  if (!items.length) items.push(O('li', 'empty', 'Aucun secteur'));
+  els.categoryList.replaceChildren(...items);
+  els.categoryList.hidden = false;
+  els.categoryInput.setAttribute('aria-expanded', 'true');
+  highlight(words.length ? (combo.matches.length ? 0 : -1) : combo.matches.findIndex((c) => c.id === els.category.value));
+}
+
+function highlight(i) {
+  const lis = els.categoryList.querySelectorAll('[role="option"]');
+  lis.forEach((li, j) => li.classList.toggle('active', j === i));
+  combo.active = i;
+  if (i >= 0 && lis[i]) {
+    els.categoryInput.setAttribute('aria-activedescendant', lis[i].id);
+    lis[i].scrollIntoView({ block: 'nearest' });
+  } else {
+    els.categoryInput.removeAttribute('aria-activedescendant');
+  }
+}
+
+function pickCategory(c) {
+  els.category.value = c.id;
+  els.categoryInput.value = c.id ? c.name : '';
+  closeCombo();
+  state.params = readForm();
+  if (kindOf(state.params)) go(1);
+  else updateFields(state.params);
+}
+
+/** Saisie abandonnée : le champ revient au secteur choisi. */
+function restoreCategoryText() {
+  els.categoryInput.value = categoryNames.get(els.category.value) ?? '';
+}
+
+function setupCombo() {
+  const input = els.categoryInput;
+  input.addEventListener('focus', () => {
+    input.select();
+    renderCombo('');
+  });
+  input.addEventListener('click', () => {
+    if (els.categoryList.hidden) renderCombo('');
+  });
+  input.addEventListener('input', (e) => {
+    // Le formulaire écoute aussi « input » : une saisie en cours n'est pas encore un secteur.
+    e.stopPropagation();
+    renderCombo(input.value);
+  });
+  input.addEventListener('keydown', (e) => {
+    const n = combo.matches.length;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (els.categoryList.hidden) return renderCombo('');
+      if (!n) return;
+      const step = e.key === 'ArrowDown' ? 1 : -1;
+      highlight(combo.active < 0 ? (step > 0 ? 0 : n - 1) : (combo.active + step + n) % n);
+    } else if (e.key === 'Enter' && !els.categoryList.hidden) {
+      // Entrée choisit le secteur en surbrillance au lieu d'envoyer le formulaire.
+      const c = combo.matches[combo.active];
+      if (!c) return;
+      e.preventDefault();
+      pickCategory(c);
+    } else if (e.key === 'Escape' && !els.categoryList.hidden) {
+      e.preventDefault();
+      restoreCategoryText();
+      closeCombo();
+    }
+  });
+  input.addEventListener('blur', () => {
+    // Champ vidé puis quitté : retour à « Tous les secteurs ».
+    if (!input.value.trim() && els.category.value) pickCategory({ id: '' });
+    restoreCategoryText();
+    closeCombo();
+  });
 }
 
 /* ---------- Init ---------- */
@@ -795,45 +919,22 @@ els.form.addEventListener('submit', (e) => {
   go(1);
 });
 
-// Changer un secteur, un pays ou un tri relance directement la recherche.
-for (const el of [els.category, els.country, els.sort, els.rating, els.lang, els.rsort]) {
+// La phrase et les champs grisés suivent la saisie.
+els.form.addEventListener('input', () => updateFields(readForm()));
+
+// Changer une liste relance directement la recherche.
+for (const el of [els.country, els.stars, els.reviews, els.rating, els.lang, els.sort]) {
   el.addEventListener('change', () => {
     state.params = readForm();
-    if (state.params[mode().required]) go(1);
+    if (kindOf(state.params)) go(1);
+    else updateFields(state.params);
   });
 }
 
 els.export.addEventListener('click', exportCsv);
-
-for (const btn of document.querySelectorAll('.mode')) {
-  btn.addEventListener('click', () => {
-    if (btn.dataset.mode === state.mode) return;
-    state.controller?.abort();
-    setMode(btn.dataset.mode, { resetFilters: true });
-    els.head.hidden = true;
-    els.export.disabled = true;
-    state.data = null;
-    state.page = 1;
-    state.params = readForm();
-    syncUrl();
-    if (state.params[mode().required]) go(1);
-    else idleState();
-  });
-}
+setupCombo();
+window.addEventListener('popstate', loadFromUrl);
 
 await loadOptions();
+loadFromUrl();
 
-const initial = new URLSearchParams(location.search);
-const initialMode = MODES[initial.get('mode')] ? initial.get('mode') : 'business';
-setMode(initialMode, { resetFilters: initialMode === 'reviews' && !initial.get('stars') });
-fillForm(initial);
-state.params = readForm();
-
-if (state.params[mode().required]) {
-  go(Math.max(1, Number.parseInt(initial.get('page'), 10) || 1));
-} else {
-  idleState();
-}
-
-health();
-setInterval(health, 30000);

@@ -1,7 +1,7 @@
 {
   "name": "trustpilot-scout",
   "version": "1.0.0",
-  "private": true,
+  "license": "MIT",
   "description": "Trouve des entreprises sur Trustpilot selon des critères (recherche, note minimale, nombre d'avis).",
   "type": "module",
   "main": "src/server.js",
