@@ -1,0 +1,232 @@
+import puppeteer from 'puppeteer-core';
+import { CONFIG, findBrowser } from './config.js';
+
+const ORIGIN = 'https://www.trustpilot.com';
+
+/** Borne une promesse (les évaluations CDP peuvent rester pendantes). */
+function withTimeout(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(undefined), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Un seul navigateur + un seul onglet réutilisé.
+ * L'onglet sert de "sac à cookies" : il résout le challenge AWS WAF une fois,
+ * puis toutes les pages sont récupérées par fetch() dans son contexte
+ * (léger : pas de rendu DOM, pas de rechargement complet).
+ */
+class BrowserSession {
+  constructor() {
+    this.browser = null;
+    this.context = null;
+    this.page = null;
+    this.tokenAt = 0;
+    this.authPromise = null;
+  }
+
+  get authenticated() {
+    return Boolean(this.tokenAt) && Date.now() - this.tokenAt < 5 * 60 * 1000;
+  }
+
+  async launch() {
+    const executablePath = findBrowser();
+    this.browser = await puppeteer.launch({
+      executablePath,
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-dev-shm-usage',
+        '--mute-audio',
+        '--no-first-run',
+        '--disable-extensions',
+        `--lang=${CONFIG.locale}`,
+      ],
+      protocolTimeout: 120000,
+    });
+    this.browser.on('disconnected', () => {
+      this.browser = null;
+      this.context = null;
+      this.page = null;
+      this.tokenAt = 0;
+      });
+  }
+
+  async newPage() {
+    if (!this.browser?.connected) await this.launch();
+    if (!this.context) this.context = await this.browser.createBrowserContext();
+    const page = await this.context.newPage();
+    await page.setUserAgent(CONFIG.userAgent);
+    await page.setExtraHTTPHeaders({ 'accept-language': CONFIG.locale });
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
+    page.setDefaultTimeout(CONFIG.fetchTimeoutMs);
+    return page;
+  }
+
+  /**
+   * Ouvre un contexte isolé (jar de cookies neuf), résout le challenge WAF
+   * puis vérifie que le jeton fonctionne réellement.
+   */
+  async authenticate() {
+    await this.dropContext();
+    this.page = await this.newPage();
+
+    await withTimeout(
+      this.page
+        .goto(ORIGIN + '/', { waitUntil: 'domcontentloaded', timeout: CONFIG.tokenTimeoutMs })
+        .catch(() => {}),
+      CONFIG.tokenTimeoutMs + 3000
+    );
+
+    const deadline = Date.now() + CONFIG.tokenTimeoutMs;
+    let token = null;
+    while (Date.now() < deadline) {
+      const cookies = await this.page.cookies().catch(() => []);
+      token = cookies.find(
+        (c) => c.name === 'aws-waf-token' && (!c.expires || c.expires * 1000 > Date.now())
+      );
+      if (token) break;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    if (!token) throw new Error('Challenge AWS WAF non résolu');
+
+    // Contrôle : le jeton est réellement accepté par l'API interne.
+    // Le WAF peut répondre 403 quelques instants après avoir posé le cookie.
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, i === 0 ? 500 : 1000));
+      const ok = await this.page
+        .evaluate(async () => {
+          const res = await fetch('/search?query=test', { cache: 'no-store', credentials: 'include' });
+          return res.status === 200;
+        })
+        .catch(() => false);
+      if (ok) {
+        this.tokenAt = Date.now();
+        return;
+      }
+    }
+    throw new Error('Jeton WAF posé mais refusé');
+  }
+
+  async dropContext() {
+    this.tokenAt = 0;
+    const page = this.page;
+    const context = this.context;
+    this.page = null;
+    this.context = null;
+    // La fermeture peut rester bloquée si un fetch est en cours : on borne.
+    await withTimeout(page?.close().catch(() => {}), 4000);
+    await withTimeout(context?.close().catch(() => {}), 4000);
+  }
+
+  async resetAuth() {
+    this.authPromise = null;
+    await this.dropContext();
+  }
+
+  async ensureReady() {
+    if (!this.browser?.connected) {
+      await this.launch();
+      this.tokenAt = 0;
+    }
+    if (!this.page || !this.authenticated) {
+      if (!this.authPromise) {
+        this.authPromise = this.authenticate().finally(() => {
+          this.authPromise = null;
+        });
+      }
+      await this.authPromise;
+    }
+  }
+
+  /**
+   * Récupère le HTML d'une page Trustpilot.
+   * @param {string} urlpath chemin commençant par "/"
+   */
+  async fetchHtml(urlpath) {
+    let lastError = null;
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await this.ensureReady();
+      } catch (err) {
+        lastError = err;
+        console.warn('[auth] échec:', err.message);
+        await new Promise((r) => setTimeout(r, 1200));
+        continue;
+      }
+      const page = this.page;
+      if (!page) continue;
+      try {
+        const result = await withTimeout(
+          page.evaluate(
+            async (url, timeout) => {
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), timeout);
+              try {
+                const res = await fetch(url, {
+                  headers: { accept: 'text/html,application/xhtml+xml' },
+                  signal: controller.signal,
+                  credentials: 'include',
+                });
+                const text = await res.text();
+                return { status: res.status, text };
+              } finally {
+                clearTimeout(timer);
+              }
+            },
+            urlpath,
+            CONFIG.fetchTimeoutMs
+          ),
+          CONFIG.fetchTimeoutMs + 5000
+        );
+
+        if (!result) throw new Error('Délai de récupération dépassé');
+
+        if (result.status === 200) {
+          this.tokenAt = Date.now();
+          return result.text;
+        }
+        if (result.status === 403 || result.status === 429 || result.status === 503) {
+          lastError = new Error(`Trustpilot a répondu ${result.status}`);
+          await this.resetAuth();
+          continue;
+        }
+        const err = new Error(`Trustpilot a répondu ${result.status}`);
+        err.status = result.status;
+        throw err;
+      } catch (err) {
+        lastError = err;
+        if (err.status && err.status !== 429 && err.status !== 503) throw err;
+        console.warn('[fetch] tentative', attempt + 1, 'échouée:', err.message);
+        await this.resetAuth();
+      }
+    }
+    const err = new Error(
+      `Trustpilot injoignable après plusieurs tentatives${lastError ? ` (${lastError.message})` : ''}`
+    );
+    err.status = 503;
+    throw err;
+  }
+
+  async close() {
+    await this.browser?.close().catch(() => {});
+  }
+
+  get status() {
+    return {
+      browser: Boolean(this.browser?.connected),
+      page: Boolean(this.page),
+      authenticated: this.authenticated,
+    };
+  }
+}
+
+export const session = new BrowserSession();
