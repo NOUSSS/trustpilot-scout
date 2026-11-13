@@ -150,9 +150,9 @@ app.get('/api/options', (req, res) => {
 
 if (process.env.NODE_ENV !== 'production') {
   app.get('/api/_debug/expire', async (req, res) => {
-    const cookies = await session.page?.cookies().catch(() => []) ?? [];
+    const cookies = (await session.context?.cookies().catch(() => [])) ?? [];
     for (const c of cookies.filter((x) => x.name === 'aws-waf-token')) {
-      await session.page.deleteCookie({ name: c.name, domain: c.domain, path: c.path }).catch(() => {});
+      await session.context.deleteCookie(c).catch(() => {});
     }
     session.tokenAt = 0;
     res.json({ ok: true, ...session.status });

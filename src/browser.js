@@ -52,7 +52,7 @@ export class BrowserSession {
 
   async startBrowser() {
     const browser = await this.launchBrowser({
-      headless: 'new',
+      headless: true,
       args: [
         '--no-sandbox',
         '--disable-blink-features=AutomationControlled',
@@ -79,7 +79,7 @@ export class BrowserSession {
     if (!this.browser?.connected) await this.launch();
     if (!this.context) this.context = await this.browser.createBrowserContext();
     const page = await this.context.newPage();
-    await page.setUserAgent(CONFIG.userAgent);
+    await page.setUserAgent({ userAgent: CONFIG.userAgent });
     await page.setExtraHTTPHeaders({ 'accept-language': CONFIG.locale });
     await page.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -95,6 +95,8 @@ export class BrowserSession {
   async authenticate() {
     await this.dropContext();
     const page = await this.newPage();
+    // Le contexte est gardé en variable : une déconnexion peut vider `this.context` en cours de route.
+    const context = this.context;
     this.page = page;
 
     await withTimeout(
@@ -107,7 +109,7 @@ export class BrowserSession {
     const deadline = Date.now() + CONFIG.tokenTimeoutMs;
     let token = null;
     while (Date.now() < deadline) {
-      const cookies = await page.cookies().catch(() => []);
+      const cookies = await context.cookies().catch(() => []);
       token = cookies.find(
         (c) => c.name === 'aws-waf-token' && (!c.expires || c.expires * 1000 > Date.now())
       );
