@@ -5,24 +5,38 @@ const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
+/**
+ * Nombre lu dans l'environnement. Variable absente ou vide : le défaut.
+ * Valeur non numérique ou sous le minimum : le défaut aussi, avec un
+ * avertissement (une faute de frappe ne doit pas lever une limite).
+ */
+export function envNumber(name, fallback, min = 0) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = Number(raw);
+  if (Number.isFinite(value) && value >= min) return value;
+  console.warn(`[config] ${name} invalide (${raw}), valeur par défaut utilisée:`, fallback);
+  return fallback;
+}
+
 export const CONFIG = {
-  port: Number(process.env.PORT || 8787),
+  port: envNumber('PORT', 8787),
   host: process.env.HOST || '127.0.0.1',
   userAgent: UA,
   locale: process.env.TP_LOCALE || 'en-US',
   /** Durée de vie du cache des pages de résultats. */
-  cacheTtlMs: Number(process.env.TP_CACHE_TTL_MS || 10 * 60 * 1000),
-  cacheMaxEntries: Number(process.env.TP_CACHE_MAX || 600),
+  cacheTtlMs: envNumber('TP_CACHE_TTL_MS', 10 * 60 * 1000),
+  cacheMaxEntries: envNumber('TP_CACHE_MAX', 600, 1),
   /** Nombre de requêtes simultanées vers Trustpilot. */
-  maxConcurrency: Number(process.env.TP_CONCURRENCY || 3),
+  maxConcurrency: envNumber('TP_CONCURRENCY', 3, 1),
   /** Durée maximale d'un fetch de page (ms). */
-  fetchTimeoutMs: Number(process.env.TP_FETCH_TIMEOUT_MS || 15000),
+  fetchTimeoutMs: envNumber('TP_FETCH_TIMEOUT_MS', 15000, 1),
   tokenTimeoutMs: 25000,
 
   /** Recherche dans les avis : bornes de scan. */
   reviewPerPage: 8,
-  reviewMaxScanPages: Number(process.env.TP_SCAN_MAX_PAGES || 40),
-  reviewScanBudgetMs: Number(process.env.TP_SCAN_BUDGET_MS || 20000),
+  reviewMaxScanPages: envNumber('TP_SCAN_MAX_PAGES', 40, 1),
+  reviewScanBudgetMs: envNumber('TP_SCAN_BUDGET_MS', 20000),
   reviewMaxHits: 240,
   reviewSnippets: 3,
   reviewStateTtlMs: 10 * 60 * 1000,
@@ -31,10 +45,10 @@ export const CONFIG = {
   reviewCacheMax: 800,
 
   /** Garde-fous d'un déploiement public. */
-  rateLimitPerMin: Number(process.env.TP_RATE_LIMIT_PER_MIN || 120),
+  rateLimitPerMin: envNumber('TP_RATE_LIMIT_PER_MIN', 120),
   /** En-tête qui porte l'adresse du client derrière un proxy de confiance (ex. `cf-connecting-ip`). */
   clientIpHeader: (process.env.TP_CLIENT_IP_HEADER || '').toLowerCase(),
-  maxActiveScans: Number(process.env.TP_MAX_ACTIVE_SCANS || 4),
+  maxActiveScans: envNumber('TP_MAX_ACTIVE_SCANS', 4, 1),
   maxScansPerClient: 2,
 };
 

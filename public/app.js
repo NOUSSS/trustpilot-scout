@@ -765,7 +765,7 @@ async function go(page = 1, depth = 0, waits = 0) {
   } catch (err) {
     if (err.name === 'AbortError' || state.controller !== controller) return;
     errorState(
-      err instanceof TypeError ? 'Le serveur local ne répond pas. Vérifie qu’il tourne toujours.' : err.message
+      err instanceof TypeError ? 'Le serveur ne répond pas. Réessaie dans un instant.' : err.message
     );
   } finally {
     resetSubmit(controller);

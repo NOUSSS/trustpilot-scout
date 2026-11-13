@@ -38,6 +38,8 @@ npm start
 
 Puis ouvre http://127.0.0.1:8787
 
+Tests (sans réseau ni navigateur) : `npm test`.
+
 Avec Docker (Chromium inclus) :
 
 ```
@@ -61,6 +63,12 @@ Variables utiles :
 | `TP_RATE_LIMIT_PER_MIN` | `120` | Requêtes `/api/find` par minute et par client (`0` : sans limite) |
 | `TP_MAX_ACTIVE_SCANS` | `4` | Parcours simultanés au total (2 par client) |
 | `TP_CLIENT_IP_HEADER` | aucun | En-tête qui porte l'adresse du client derrière un proxy de confiance (`cf-connecting-ip` derrière Cloudflare) |
+| `TP_CACHE_MAX` | `600` | Nombre de pages gardées en cache |
+| `TP_FETCH_TIMEOUT_MS` | `15000` | Durée maximale du téléchargement d'une page |
+| `TP_LOCALE` | `en-US` | Langue annoncée par le navigateur headless |
+
+Une valeur numérique invalide est ignorée : le défaut s'applique et le
+serveur l'écrit dans son journal.
 
 ## Comment ça marche
 
@@ -82,7 +90,8 @@ pays, catégories). Le reste n'est jamais transmis au navigateur.
 - limitation de concurrence (3) pour ne pas déclencher de blocage ;
 - préchargement non bloquant de la page suivante ;
 - clamps : pagination bornée à la dernière page réelle et à 1000 pages max,
-  paramètres validés côté serveur, réponse vide immédiate sans mot-clé ;
+  paramètres validés côté serveur, refus immédiat en 400 sans entreprise,
+  secteur ni texte d'avis ;
 - reprise automatique : jeton WAF expiré ou challenge raté → nouveau contexte
   isolé, nouvelle tentative, puis `503` explicite ;
 - recherche dans les avis : état de scan partagé par critères (pas de re-scan
