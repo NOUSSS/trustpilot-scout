@@ -1,3 +1,6 @@
+/* Les styles de UI SDK (web.css) restent sous ceux de la page. */
+@layer ui-sdk;
+
 /* Design system Nexudus : couleurs relevées au pixel sur la planche d'origine. */
 :root {
   color-scheme: light;
@@ -43,6 +46,23 @@
   --r: 8px;
   --r-lg: 16px;
   --font: "Figtree", "Segoe UI", system-ui, -apple-system, sans-serif;
+
+  /* Jetons de UI SDK sur la même palette. */
+  --ui-background: var(--surface);
+  --ui-foreground: var(--ink);
+  --ui-muted: var(--primary-100);
+  --ui-muted-foreground: var(--muted);
+  --ui-border: var(--line);
+  --ui-input: var(--line);
+  --ui-primary: var(--primary);
+  --ui-primary-foreground: #fff;
+  --ui-ring: var(--ink);
+  --ui-ring-border: var(--ink);
+  --ui-shadow: 0 0 0 1px var(--line), 0 8px 24px rgba(0, 0, 0, 0.1);
+  --ui-radius: 6px;
+  --ui-font-sans: var(--font);
+  --ui-font-size: 14px;
+  --ui-icon-size: 16px;
 }
 
 * { box-sizing: border-box; }
@@ -178,7 +198,7 @@ button, input, select { font: inherit; }
 input[type="search"],
 input[type="text"],
 input[type="number"],
-select {
+[data-slot="select-trigger"] {
   width: 100%;
   height: 48px;
   padding: 0 16px;
@@ -194,18 +214,20 @@ select {
 ::placeholder { color: var(--faint); opacity: 1; }
 
 input:hover,
-select:hover { border-color: #c4c4c4; }
+[data-slot="select-trigger"]:hover { border-color: #c4c4c4; }
 
 /* Focus : bordure noire de 2 px, sans décaler le contenu. */
 input:focus-visible,
-select:focus-visible {
+[data-slot="select-trigger"]:focus-visible,
+[data-slot="select-trigger"][data-open] {
+  outline: none;
   border-color: var(--ink);
   box-shadow: inset 0 0 0 1px var(--ink);
 }
 
 /* Champ sans effet sur la combinaison en cours. */
 input:disabled,
-select:disabled {
+[data-slot="select-trigger"]:disabled {
   background-color: var(--chip);
   border-color: var(--chip);
   color: var(--faint);
@@ -214,44 +236,110 @@ select:disabled {
 
 input[type="search"]::-webkit-search-cancel-button { opacity: 0.5; }
 
-select {
-  appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23111' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-  background-position: right 14px center;
-  background-repeat: no-repeat;
-  padding-right: 40px;
+[data-slot="select-trigger"] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: start;
   cursor: pointer;
+}
+
+[data-slot="select-value"] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-slot="select-value"][data-placeholder] { color: var(--faint); }
+
+/* ---------- Listes déroulantes (Pays, notes, tri, secteur) ---------- */
+:is([data-slot="select-content"], [data-slot="combobox-content"]) {
+  --list-height: min(320px, var(--available-height));
+  max-height: var(--list-height);
+  padding: 6px;
+  border: 0;
+  border-radius: var(--r);
+  font-size: 14px;
+  transition: opacity 0.12s, translate 0.12s;
+}
+
+:is([data-slot="select-content"], [data-slot="combobox-content"]):is([data-starting-style], [data-ending-style]) {
+  opacity: 0;
+  translate: 0 -4px;
+}
+
+[data-slot="select-content"]:has([data-slot="select-input"]) { display: flex; flex-direction: column; overflow: hidden; }
+[data-slot="select-list"] { overflow-y: auto; }
+
+input[data-slot="select-input"] {
+  flex: none;
+  height: 40px;
+  margin-bottom: 6px;
+  font-size: 14px;
+}
+
+:is([data-slot="select-item"], [data-slot="combobox-item"]) {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-height: 0;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+:is([data-slot="select-item"], [data-slot="combobox-item"])[data-highlighted] { background: var(--primary-100); }
+:is([data-slot="select-item"], [data-slot="combobox-item"])[data-selected] { color: var(--primary); }
+:is([data-slot="select-item"], [data-slot="combobox-item"])[data-disabled] { color: var(--faint); cursor: not-allowed; }
+:is([data-slot="select-item-indicator"], [data-slot="combobox-item-indicator"]) { color: var(--primary); padding-left: 8px; }
+
+:is([data-slot="select-empty"], [data-slot="combobox-empty"]):not(:empty) {
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+:is([data-slot="select-item-text"], [data-slot="combobox-item-text"]) mark {
+  background: none;
+  color: inherit;
+  font-weight: 700;
 }
 
 /* ---------- Options avancées ---------- */
 .advanced { margin-top: 20px; }
 
-.advanced summary {
+.advanced [data-slot="collapsible-trigger"] {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   height: 32px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
   font-size: 14px;
   font-weight: 500;
   color: var(--ink-2);
   cursor: pointer;
-  list-style: none;
-  user-select: none;
 }
 
-.advanced summary::-webkit-details-marker { display: none; }
-
-.advanced summary::before {
-  content: "";
-  width: 16px;
-  height: 16px;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23111' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 6 6 6-6 6'/%3E%3C/svg%3E") center / 16px no-repeat;
-  transition: transform 0.15s;
+.advanced [data-slot="collapsible-trigger"]::after {
+  --ui-icon: var(--ui-icon-chevron);
+  order: -1;
+  rotate: -90deg;
+  transition: rotate 0.15s;
 }
 
-.advanced[open] summary::before { transform: rotate(90deg); }
-.advanced summary:hover { color: var(--ink); }
-.advanced summary:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: var(--r-sm); }
+.advanced [data-slot="collapsible-trigger"][data-open]::after { rotate: 0deg; }
+.advanced [data-slot="collapsible-trigger"]:hover { color: var(--ink); }
+.advanced [data-slot="collapsible-trigger"]:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: var(--r-sm); }
+
+.advanced [data-slot="collapsible-panel"] {
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  overflow: hidden;
+  height: var(--collapsible-panel-height);
+  transition: height 0.2s ease;
+}
+
+.advanced [data-slot="collapsible-panel"]:is([data-starting-style], [data-ending-style]) { height: 0; }
 
 .advanced-count:empty { display: none; }
 .advanced-count {
@@ -272,7 +360,7 @@ select {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   align-items: end;
   gap: 16px;
-  margin-top: 12px;
+  padding-top: 12px;
 }
 
 .form-foot {
@@ -290,43 +378,45 @@ select {
 }
 
 /* ---------- Secteur : liste filtrée à la frappe ---------- */
-.combo { position: relative; }
+.combo { position: relative; display: flex; }
+.combo > ui-combobox-input { flex: 1; min-width: 0; }
+.combo input { padding-right: 72px; }
 
-.combo input {
-  padding-right: 40px;
-  background: var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23111' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") right 14px center no-repeat;
-}
-
-.combo-list {
+.combo :is([data-slot="combobox-clear"], [data-slot="combobox-trigger"]) {
   position: absolute;
-  z-index: 10;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  max-height: 320px;
-  overflow-y: auto;
-  margin: 0;
-  padding: 6px;
-  list-style: none;
-  background: var(--surface);
-  border-radius: var(--r);
-  box-shadow: 0 0 0 1px var(--line), 0 8px 24px rgba(0, 0, 0, 0.1);
-}
-
-.combo-list li {
-  padding: 8px 10px;
+  top: 50%;
+  translate: 0 -50%;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
   border-radius: var(--r-sm);
-  font-size: 14px;
+  background: none;
+  color: var(--ink);
   cursor: pointer;
 }
 
-.combo-list li.group { font-weight: 600; }
-.combo-list li.sub { padding-left: 22px; color: var(--ink-2); }
-.combo-list li.active { background: var(--primary-100); color: var(--ink); }
-.combo-list li[aria-selected="true"] { color: var(--primary); }
-.combo-list li.empty { color: var(--muted); cursor: default; }
-.combo-parent { color: var(--faint); }
-.combo-list mark { background: none; color: inherit; font-weight: 700; }
+.combo [data-slot="combobox-trigger"] { right: 10px; }
+.combo [data-slot="combobox-clear"] { right: 38px; color: var(--muted); }
+.combo [data-slot="combobox-clear"]::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  mask: var(--ui-icon-x) center / contain no-repeat;
+}
+.combo [data-slot="combobox-clear"]:hover { color: var(--ink); background: var(--chip); }
+.combo [data-slot="combobox-trigger"]:disabled { color: var(--faint); cursor: not-allowed; }
+
+[data-slot="combobox-item"].group { font-weight: 600; }
+[data-slot="combobox-item"].sub { padding-left: 22px; color: var(--ink-2); }
+[data-slot="combobox-item"].sub[data-selected] { color: var(--primary); }
+.combo-parent { color: var(--faint); display: none; white-space: pre; }
+.is-filtering .combo-parent { display: inline; }
+.is-filtering [data-slot="combobox-item"].sub { padding-left: 10px; }
+[data-slot="combobox-item"] [data-slot="combobox-item-indicator"] { margin-inline-start: auto; }
 
 .results-tools {
   display: flex;
@@ -354,6 +444,10 @@ select {
   white-space: nowrap;
   transition: background-color 0.15s, color 0.15s, box-shadow 0.15s;
 }
+
+/* web.css ramène les icônes de bouton à 16 px : elles gardent leur taille. */
+.btn svg { width: 16px; height: 16px; flex: none; }
+.btn-lg svg { width: 18px; height: 18px; }
 
 .btn:hover { background: var(--primary-hover); }
 .btn:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
@@ -658,7 +752,11 @@ article.card:hover { box-shadow: 0 8px 24px -12px rgba(17, 17, 17, 0.18); }
   flex-wrap: wrap;
 }
 
-.pager button {
+.pager [data-slot="pagination-list"] { gap: 4px; justify-content: center; }
+
+.pager :is([data-slot="pagination-link"], [data-slot="pagination-previous"], [data-slot="pagination-next"]) {
+  display: inline-grid;
+  place-items: center;
   min-width: 40px;
   height: 40px;
   padding: 0 12px;
@@ -672,15 +770,15 @@ article.card:hover { box-shadow: 0 8px 24px -12px rgba(17, 17, 17, 0.18); }
   transition: background-color 0.15s;
 }
 
-.pager button:hover:not(:disabled) { background: var(--line); }
-.pager button[aria-current="page"] { background: var(--ink); color: #fff; }
-.pager button:disabled:not([aria-current]) { color: var(--line); cursor: default; }
-.pager .gap { color: var(--faint); padding: 0 4px; }
+.pager :is([data-slot="pagination-previous"], [data-slot="pagination-next"]) { width: 40px; padding: 0; }
+.pager button:hover:not([data-disabled], [data-current]) { background: var(--line); }
+.pager [data-slot="pagination-link"][data-current] { background: var(--ink); color: #fff; cursor: default; }
+.pager button[data-disabled] { color: var(--line); cursor: default; }
+.pager [data-slot="pagination-ellipsis"] { color: var(--faint); padding: 0 4px; }
+.pager button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 
 .pager-jump { display: flex; align-items: center; gap: 8px; margin-left: 12px; }
 .pager-jump input { width: 80px; height: 40px; text-align: center; padding: 0 8px; }
-.pager-jump button { background: var(--primary); color: #fff; }
-.pager-jump button:hover:not(:disabled) { background: var(--primary-hover); }
 
 /* ---------- États ---------- */
 .state {

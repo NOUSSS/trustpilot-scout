@@ -21,6 +21,12 @@ Modules ES, pas d'étape de build, pas de TypeScript.
 - Une recherche réelle envoie des requêtes à Trustpilot. Les tests utilisent
   des pages synthétiques ; garder les essais réels peu nombreux.
 - `/api/_debug/expire` n'existe que hors production (`NODE_ENV`).
+- Les contrôles de `public/` (champs, listes, secteur, options avancées,
+  boutons, pagination) sont des composants UI SDK (`@ui-sdk/web`, version
+  figée), servis sous `/ui-sdk/` depuis `node_modules`. Leur doc est dans
+  `node_modules/@ui-sdk/web/docs/` ; une liste s'écoute par `valuechange`,
+  pas par `change`. La balise `<meta property="csp-nonce">` est requise
+  par la CSP.
 - Fichiers en CRLF sous Windows (conversion de git), LF dans le dépôt.
 
 ## Conventions

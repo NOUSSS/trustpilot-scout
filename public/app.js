@@ -1,4 +1,12 @@
 import { toCsv } from './csv.js';
+// Composants UI SDK (vercel-labs/ui) : chaque entrée définit ses éléments à l'import.
+import '/ui-sdk/web/field.js';
+import '/ui-sdk/web/input.js';
+import '/ui-sdk/web/select.js';
+import '/ui-sdk/web/combobox.js';
+import '/ui-sdk/web/collapsible.js';
+import '/ui-sdk/web/button.js';
+import '/ui-sdk/web/pagination.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -6,7 +14,6 @@ const els = {
   form: $('#filters'),
   q: $('#q'),
   category: $('#category'),
-  categoryInput: $('#category-input'),
   categoryList: $('#category-list'),
   advanced: $('#advanced'),
   advancedCount: $('#advanced-count'),
@@ -35,6 +42,10 @@ const FIELDS = ['q', 'category', 'term', 'country', 'city', 'stars', 'reviews', 
 const ADVANCED = ['country', 'city', 'stars', 'reviews', 'rating', 'lang', 'sort'];
 /** Valeurs par défaut, omises de l'URL. */
 const DEFAULTS = { lang: 'all', sort: 'relevance' };
+/** Listes UI SDK : leur valeur vaut `null` tant que rien n'est choisi. */
+const LISTS = ['category', 'country', 'stars', 'reviews', 'rating', 'lang', 'sort'];
+
+const valueOf = (name) => String(els[name].value ?? '').trim();
 
 const state = {
   page: 1,
@@ -50,11 +61,27 @@ const O = (tag, cls, text) => {
   return el;
 };
 
-const option = (value, label) => {
-  const opt = O('option', null, label);
-  opt.value = value;
-  return opt;
+/** Bouton natif dans son élément UI SDK. */
+const uiButton = (button) => {
+  const wrap = document.createElement('ui-button');
+  wrap.append(button);
+  return wrap;
 };
+
+/** Remplit un `ui-select` : une entrée par option, coche comprise. */
+function fillSelect(el, list) {
+  const items = list.map(({ value, label }) => {
+    const item = O('ui-select-item');
+    item.setAttribute('value', value);
+    item.setAttribute('label', label);
+    item.append(O('ui-select-item-text', null, label), O('ui-select-item-indicator'));
+    return item;
+  });
+  el.querySelector('ui-select-list').replaceChildren(...items);
+}
+
+const hasItem = (el, value) =>
+  [...el.querySelectorAll('ui-select-item, ui-combobox-item')].some((item) => item.getAttribute('value') === value);
 
 const escapeHtml = (s) =>
   String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -111,10 +138,8 @@ async function loadOptions() {
     const data = await res.json();
 
     const fill = (el, list, key) => {
-      for (const o of list) {
-        el.append(option(o.value, o.label));
-        labels[key]?.set(o.value, o.label);
-      }
+      fillSelect(el, list);
+      for (const o of list) labels[key]?.set(o.value, o.label);
     };
     fill(els.stars, data.stars, 'stars');
     fill(els.reviews, data.reviews, 'reviews');
@@ -123,21 +148,22 @@ async function loadOptions() {
 
     for (const top of data.categories) {
       categoryNames.set(top.id, top.name);
-      categories.push({ id: top.id, name: top.name, group: true, key: fold(top.name) });
+      categories.push({ id: top.id, name: top.name, group: true });
       for (const sub of top.sub) {
         categoryNames.set(sub.id, sub.name);
-        categories.push({ id: sub.id, name: sub.name, parent: top.name, key: fold(`${sub.name} ${top.name}`) });
+        categories.push({ id: sub.id, name: sub.name, parent: top.name });
       }
     }
 
     const countries = data.countries
       .map((code) => ({ code, name: countryName(code) }))
       .sort((a, b) => a.name.localeCompare(b.name, 'fr'));
-    for (const c of countries) els.country.append(option(c.code, c.name));
-
-    for (const code of data.reviewLanguages) {
-      els.lang.append(option(code, code === 'all' ? 'Toutes' : languageName(code)));
-    }
+    fillSelect(els.country, [{ value: '', label: 'Tous les pays' }, ...countries.map((c) => ({ value: c.code, label: c.name }))]);
+    fillSelect(
+      els.lang,
+      data.reviewLanguages.map((code) => ({ value: code, label: code === 'all' ? 'Toutes' : languageName(code) }))
+    );
+    fillCategories();
   } catch {
     /* les selects restent vides, la recherche par mot-clé fonctionne quand même */
   }
@@ -172,11 +198,11 @@ function kindOf(p) {
 function updateFields(p) {
   const kind = kindOf(p);
   const company = kind === 'company';
-  for (const el of [els.categoryInput, els.country, els.city, els.stars, els.reviews]) el.disabled = company;
-  if (company) closeCombo();
+  for (const el of [els.category, els.country, els.city, els.stars, els.reviews]) el.disabled = company;
+  if (company) els.category.open = false;
   // Trustpilot ne trie que les secteurs et les avis d'une entreprise.
   els.sort.disabled = !company && !p.category;
-  for (const opt of els.sort.options) opt.disabled = company && opt.value === 'reviews';
+  els.sort.querySelector('ui-select-item[value="reviews"]')?.toggleAttribute('disabled', company);
   els.hint.textContent = describe(p);
   const active = ADVANCED.filter((name) => p[name] && p[name] !== (DEFAULTS[name] ?? '')).length;
   els.advancedCount.textContent = active ? String(active) : '';
@@ -477,48 +503,41 @@ function skeletons(kind, n = 6) {
   els.results.replaceChildren(grid);
 }
 
-function pagerButton(label, page, opts = {}) {
-  const b = O('button', null, label);
-  b.type = 'button';
-  if (opts.current) b.setAttribute('aria-current', 'page');
-  if (opts.disabled) b.disabled = true;
-  b.addEventListener('click', () => go(page));
-  return b;
-}
+/** Gabarit de la pagination UI SDK : précédent, pages, ellipses, suivant. */
+const PAGER_HTML = `
+  <ui-pagination-list>
+    <ui-pagination-item><ui-pagination-previous><button type="button" aria-label="Page précédente"></button></ui-pagination-previous></ui-pagination-item>
+    <template><ui-pagination-item><ui-pagination-link><button type="button"></button></ui-pagination-link></ui-pagination-item></template>
+    <template data-ellipsis><ui-pagination-item><ui-pagination-ellipsis></ui-pagination-ellipsis></ui-pagination-item></template>
+    <ui-pagination-item><ui-pagination-next><button type="button" aria-label="Page suivante"></button></ui-pagination-next></ui-pagination-item>
+  </ui-pagination-list>`;
 
 function renderPager(p) {
-  const pager = O('nav', 'pager');
+  const wrap = O('div', 'pager');
+  const pager = O('ui-pagination');
   pager.setAttribute('aria-label', 'Pagination');
-  pager.append(pagerButton('‹', p.page - 1, { disabled: !p.hasPrevious }));
-
-  if (p.totalPages) {
-    const pages = new Set([1, p.totalPages]);
-    for (let i = p.page - 2; i <= p.page + 2; i++) if (i >= 1 && i <= p.totalPages) pages.add(i);
-    let prev = 0;
-    for (const n of [...pages].filter((x) => x >= 1).sort((a, b) => a - b)) {
-      if (n - prev > 1) pager.append(O('span', 'gap', '…'));
-      pager.append(pagerButton(String(n), n, { current: n === p.page, disabled: n === p.page }));
-      prev = n;
-    }
-  } else {
-    // Collecte : seules les pages déjà trouvées, plus la suivante si le scan peut continuer.
-    const last = Math.ceil(p.found / p.perPage) + (p.hasNext && p.found <= p.page * p.perPage ? 1 : 0);
-    for (let i = Math.max(1, p.page - 2); i <= Math.min(p.page + 2, Math.max(last, p.page)); i++) {
-      pager.append(pagerButton(String(i), i, { current: i === p.page, disabled: i === p.page }));
-    }
-  }
-
-  pager.append(pagerButton('›', p.page + 1, { disabled: !p.hasNext }));
+  // Collecte : seules les pages déjà trouvées, plus la suivante si le parcours peut continuer.
+  const count = p.totalPages
+    ? p.totalPages
+    : Math.max(p.page, Math.ceil(p.found / p.perPage) + (p.hasNext && p.found <= p.page * p.perPage ? 1 : 0));
+  pager.setAttribute('page-count', String(Math.max(count, 1)));
+  pager.setAttribute('default-page', String(p.page));
+  pager.setAttribute('siblings', '2');
+  pager.innerHTML = PAGER_HTML;
+  pager.addEventListener('pagechange', (e) => go(e.detail.value));
+  wrap.append(pager);
 
   if (p.totalPages > 1) {
     const jump = O('div', 'pager-jump');
+    const field = O('ui-input');
     const input = O('input');
     input.type = 'number';
     input.min = '1';
     input.max = String(p.totalPages);
     input.placeholder = `/${p.totalPages}`;
     input.setAttribute('aria-label', 'Aller à la page');
-    const goBtn = O('button', null, 'Aller');
+    field.append(input);
+    const goBtn = O('button', 'btn', 'Aller');
     goBtn.type = 'button';
     const jumpTo = () => {
       const n = Number.parseInt(input.value, 10);
@@ -526,11 +545,11 @@ function renderPager(p) {
     };
     goBtn.addEventListener('click', jumpTo);
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); jumpTo(); } });
-    jump.append(input, goBtn);
-    pager.append(jump);
+    jump.append(field, uiButton(goBtn));
+    wrap.append(jump);
   }
 
-  return pager;
+  return wrap;
 }
 
 const cacheLabel = (c) => (c === 'hit' ? 'cache' : c === 'shared' ? 'requête partagée' : 'réseau');
@@ -605,7 +624,7 @@ function renderScan(data) {
       const next = O('button', 'btn', 'Continuer');
       next.type = 'button';
       next.addEventListener('click', () => go(p.page));
-      box.append(next);
+      box.append(uiButton(next));
     }
     els.results.replaceChildren(box);
     return;
@@ -658,14 +677,14 @@ function errorState(message) {
   const retry = O('button', 'btn', 'Réessayer');
   retry.type = 'button';
   retry.addEventListener('click', () => go(state.page));
-  box.append(retry);
+  box.append(uiButton(retry));
   els.results.replaceChildren(box);
 }
 
 /* ---------- Requêtes ---------- */
 function readForm() {
   const params = {};
-  for (const name of FIELDS) params[name] = els[name].value.trim();
+  for (const name of FIELDS) params[name] = valueOf(name);
   return params;
 }
 
@@ -673,16 +692,17 @@ function readForm() {
 function fillForm(search) {
   for (const name of FIELDS) {
     const el = els[name];
-    const value = search.get(name) ?? DEFAULTS[name] ?? '';
-    el.value = value;
-    // Valeur absente d'une liste : on garde le défaut plutôt qu'un select vide.
-    if (el.value !== value) el.value = DEFAULTS[name] ?? '';
+    let value = search.get(name) ?? DEFAULTS[name] ?? '';
+    if (!LISTS.includes(name)) {
+      el.value = value;
+      continue;
+    }
+    // Valeur absente d'une liste (secteur inconnu compris) : on garde le défaut.
+    if (!hasItem(el, value)) value = DEFAULTS[name] ?? '';
+    el.value = value || (name === 'category' ? null : value);
   }
-  // Secteur inconnu : on l'oublie plutôt que d'envoyer un identifiant invalide.
-  if (!categoryNames.has(els.category.value)) els.category.value = '';
-  els.categoryInput.value = categoryNames.get(els.category.value) ?? '';
   // Un filtre avancé actif depuis l'URL reste visible.
-  if (ADVANCED.some((name) => els[name].value !== (DEFAULTS[name] ?? ''))) els.advanced.open = true;
+  if (ADVANCED.some((name) => valueOf(name) !== (DEFAULTS[name] ?? ''))) els.advanced.open = true;
 }
 
 function syncUrl() {
@@ -832,120 +852,42 @@ function exportCsv() {
   setTimeout(() => URL.revokeObjectURL(a.href), 0);
 }
 
-/* ---------- Secteur : liste filtrée à la frappe ---------- */
-/** Minuscules sans accents, pour comparer « energie » et « Énergie ». */
-const fold = (s) => String(s).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
-
-const combo = { matches: [], active: -1 };
-
-function closeCombo() {
-  els.categoryList.hidden = true;
-  els.categoryInput.setAttribute('aria-expanded', 'false');
-  els.categoryInput.removeAttribute('aria-activedescendant');
-  combo.active = -1;
-}
-
-/** Nom avec la partie tapée en gras (comparée sans accents, même longueur une fois repliée). */
-function markMatch(name, word) {
-  const at = word ? fold(name).indexOf(word) : -1;
-  if (at < 0 || fold(name).length !== name.length) return document.createTextNode(name);
-  const frag = document.createDocumentFragment();
-  frag.append(name.slice(0, at), O('mark', null, name.slice(at, at + word.length)), name.slice(at + word.length));
-  return frag;
-}
-
-function renderCombo(text) {
-  const words = fold(text).trim().split(/\s+/).filter(Boolean);
-  combo.matches = words.length
-    ? categories.filter((c) => words.every((w) => c.key.includes(w))).slice(0, 80)
-    : [{ id: '', name: 'Tous les secteurs', group: true }, ...categories];
-
-  const items = combo.matches.map((c, i) => {
-    const li = O('li', c.group ? 'group' : 'sub');
-    li.id = `category-opt-${i}`;
-    li.setAttribute('role', 'option');
-    li.setAttribute('aria-selected', String(c.id === els.category.value));
-    li.append(markMatch(c.name, words[0] ?? ''));
-    // Un sous-secteur trouvé hors de son groupe rappelle son parent.
-    if (words.length && c.parent) li.append(O('span', 'combo-parent', ` · ${c.parent}`));
-    li.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      pickCategory(c);
-    });
-    return li;
+/* ---------- Listes : secteur, pays, notes, tri ---------- */
+/** Secteurs dans la liste : chaque secteur suivi de ses sous-secteurs, qui rappellent leur parent. */
+function fillCategories() {
+  const items = categories.map((c) => {
+    const item = O('ui-combobox-item', c.group ? 'group' : 'sub');
+    item.setAttribute('value', c.id);
+    item.setAttribute('label', c.name);
+    if (c.parent) item.setAttribute('keywords', c.parent);
+    item.append(O('ui-combobox-item-text', null, c.name));
+    if (c.parent) item.append(O('span', 'combo-parent', ` · ${c.parent}`));
+    item.append(O('ui-combobox-item-indicator'));
+    return item;
   });
-  if (!items.length) items.push(O('li', 'empty', 'Aucun secteur'));
   els.categoryList.replaceChildren(...items);
-  els.categoryList.hidden = false;
-  els.categoryInput.setAttribute('aria-expanded', 'true');
-  highlight(words.length ? (combo.matches.length ? 0 : -1) : combo.matches.findIndex((c) => c.id === els.category.value));
 }
 
-function highlight(i) {
-  const lis = els.categoryList.querySelectorAll('[role="option"]');
-  lis.forEach((li, j) => li.classList.toggle('active', j === i));
-  combo.active = i;
-  if (i >= 0 && lis[i]) {
-    els.categoryInput.setAttribute('aria-activedescendant', lis[i].id);
-    lis[i].scrollIntoView({ block: 'nearest' });
-  } else {
-    els.categoryInput.removeAttribute('aria-activedescendant');
-  }
-}
-
-function pickCategory(c) {
-  els.category.value = c.id;
-  els.categoryInput.value = c.id ? c.name : '';
-  closeCombo();
-  state.params = readForm();
+/** Choix dans une liste : la recherche repart de la page 1 quand la combinaison est complète. */
+function picked(name, value) {
+  state.params = { ...readForm(), [name]: value ?? '' };
   if (kindOf(state.params)) go(1);
   else updateFields(state.params);
 }
 
-/** Saisie abandonnée : le champ revient au secteur choisi. */
-function restoreCategoryText() {
-  els.categoryInput.value = categoryNames.get(els.category.value) ?? '';
-}
-
-function setupCombo() {
-  const input = els.categoryInput;
-  input.addEventListener('focus', () => {
-    input.select();
-    renderCombo('');
+function setupLists() {
+  els.category.itemToLabel = (id) => categoryNames.get(id) ?? '';
+  // Le parent d'un sous-secteur ne sert qu'à le situer dans une liste filtrée.
+  els.category.addEventListener('querychange', (e) => {
+    const content = els.category.querySelector('ui-combobox-content');
+    content.classList.toggle('is-filtering', Boolean(e.detail.value) && e.detail.reason !== 'item-press');
   });
-  input.addEventListener('click', () => {
-    if (els.categoryList.hidden) renderCombo('');
-  });
-  input.addEventListener('input', (e) => {
-    // Le formulaire écoute aussi « input » : une saisie en cours n'est pas encore un secteur.
-    e.stopPropagation();
-    renderCombo(input.value);
-  });
-  input.addEventListener('keydown', (e) => {
-    const n = combo.matches.length;
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      if (els.categoryList.hidden) return renderCombo('');
-      if (!n) return;
-      const step = e.key === 'ArrowDown' ? 1 : -1;
-      highlight(combo.active < 0 ? (step > 0 ? 0 : n - 1) : (combo.active + step + n) % n);
-    } else if (e.key === 'Enter' && !els.categoryList.hidden) {
-      // Entrée choisit le secteur en surbrillance au lieu d'envoyer le formulaire.
-      const c = combo.matches[combo.active];
-      if (!c) return;
-      e.preventDefault();
-      pickCategory(c);
-    } else if (e.key === 'Escape' && !els.categoryList.hidden) {
-      e.preventDefault();
-      restoreCategoryText();
-      closeCombo();
-    }
-  });
-  input.addEventListener('blur', () => {
-    // Champ vidé puis quitté : retour à « Tous les secteurs ».
-    if (!input.value.trim() && els.category.value) pickCategory({ id: '' });
-    restoreCategoryText();
-    closeCombo();
+  for (const name of LISTS) {
+    els[name].addEventListener('valuechange', (e) => picked(name, e.detail.value));
+  }
+  // La liste des pays s'ouvre sur sa recherche : on tape directement le nom.
+  els.country.addEventListener('openchangecomplete', (e) => {
+    if (e.detail.value) els.country.querySelector('ui-select-input input').focus();
   });
 }
 
@@ -959,17 +901,8 @@ els.form.addEventListener('submit', (e) => {
 // La phrase et les champs grisés suivent la saisie.
 els.form.addEventListener('input', () => updateFields(readForm()));
 
-// Changer une liste relance directement la recherche.
-for (const el of [els.country, els.stars, els.reviews, els.rating, els.lang, els.sort]) {
-  el.addEventListener('change', () => {
-    state.params = readForm();
-    if (kindOf(state.params)) go(1);
-    else updateFields(state.params);
-  });
-}
-
 els.export.addEventListener('click', exportCsv);
-setupCombo();
+setupLists();
 window.addEventListener('popstate', loadFromUrl);
 
 await loadOptions();

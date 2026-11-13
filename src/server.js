@@ -381,6 +381,12 @@ app.get('/api/find', async (req, res) => {
   }
 });
 
+// Composants de UI SDK (vercel-labs/ui), servis depuis le paquet : la CSP reste sur 'self'.
+app.use(
+  '/ui-sdk',
+  express.static(path.join(here, '..', 'node_modules', '@ui-sdk', 'web', 'browser'))
+);
+
 app.use(
   express.static(publicDir, {
     setHeaders(res, filePath) {
