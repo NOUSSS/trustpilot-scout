@@ -70,6 +70,7 @@ export class Collector {
       totalSource: null,
       updatedAt: Date.now(),
       running: null,
+      owner: null,
     };
     this.states.set(key, state);
     this.prune();
@@ -132,13 +133,15 @@ export class Collector {
    * Un scan arrêté par le budget reprend là où il s'était arrêté au prochain appel ;
    * seul le plafond de pages est définitif.
    */
-  async ensure(key, job, needed) {
+  async ensure(key, job, needed, { owner = null } = {}) {
     const state = this.state(key);
     // Un scan en cours visait peut-être moins de résultats : on attend sa fin, puis on complète.
     while (state.running) await state.running.catch(() => {});
     const sourceDone = state.exhausted || state.capped;
     if (!state.pending.length && (state.hits.length >= needed || sourceDone)) return state;
 
+    this.admit(owner);
+    state.owner = owner;
     state.partial = false;
     state.error = null;
     state.running = (async () => {
@@ -178,6 +181,21 @@ export class Collector {
     await state.running.catch(() => {});
     if (state.error && !state.hits.length) throw state.error;
     return state;
+  }
+
+  /** Refuse un nouveau parcours quand trop sont déjà en cours, au total ou pour ce client. */
+  admit(owner) {
+    const running = [...this.states.values()].filter((s) => s.running);
+    const mine = owner ? running.filter((s) => s.owner === owner).length : 0;
+    if (running.length < CONFIG.maxActiveScans && mine < CONFIG.maxScansPerClient) return;
+    const err = new Error(
+      mine >= CONFIG.maxScansPerClient
+        ? 'Tu as déjà des parcours en cours : attends qu’ils se terminent'
+        : 'Trop de parcours en cours : réessaie dans quelques secondes'
+    );
+    err.status = mine >= CONFIG.maxScansPerClient ? 429 : 503;
+    err.retryAfter = 5;
+    throw err;
   }
 
   /** État pour une clé donnée (sans lancer de scan). */

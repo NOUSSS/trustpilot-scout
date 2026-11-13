@@ -36,24 +36,29 @@ export class TtlCache {
   }
 }
 
-/** Limite le nombre d'exécutions simultanées. */
+/**
+ * Limite le nombre d'exécutions simultanées. Les tâches de fond (parcours,
+ * fouille des avis) passent après les autres : une fouille ne fait pas
+ * attendre une recherche simple.
+ */
 export class Limiter {
   constructor(max) {
     this.max = max;
     this.active = 0;
     this.waiting = [];
+    this.background = [];
   }
 
-  async run(task) {
+  async run(task, { background = false } = {}) {
     if (this.active >= this.max) {
-      await new Promise((resolve) => this.waiting.push(resolve));
+      await new Promise((resolve) => (background ? this.background : this.waiting).push(resolve));
     }
     this.active++;
     try {
       return await task();
     } finally {
       this.active--;
-      const next = this.waiting.shift();
+      const next = this.waiting.shift() ?? this.background.shift();
       if (next) next();
     }
   }
@@ -65,8 +70,9 @@ export class Limiter {
  * @param {Limiter} limiter
  * @param {() => Promise<any>} task
  * @param {string} key
+ * @param {{ background?: boolean }} [options] transmis au limiteur
  */
-export async function cached(cache, limiter, key, task) {
+export async function cached(cache, limiter, key, task, options) {
   const hit = cache.get(key);
   if (hit !== undefined) return { value: hit, hit: true, shared: false };
 
@@ -75,7 +81,7 @@ export async function cached(cache, limiter, key, task) {
   if (!inflight) {
     if (!cache.inflight) cache.inflight = new Map();
     inflight = limiter
-      .run(task)
+      .run(task, options)
       .then((value) => {
         cache.set(key, value);
         return value;

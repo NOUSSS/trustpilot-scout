@@ -29,6 +29,13 @@ export const CONFIG = {
   reviewStateMax: 60,
   reviewCacheTtlMs: 15 * 60 * 1000,
   reviewCacheMax: 800,
+
+  /** Garde-fous d'un déploiement public. */
+  rateLimitPerMin: Number(process.env.TP_RATE_LIMIT_PER_MIN || 120),
+  /** En-tête qui porte l'adresse du client derrière un proxy de confiance (ex. `cf-connecting-ip`). */
+  clientIpHeader: (process.env.TP_CLIENT_IP_HEADER || '').toLowerCase(),
+  maxActiveScans: Number(process.env.TP_MAX_ACTIVE_SCANS || 4),
+  maxScansPerClient: 2,
 };
 
 /** Recherche un binaire Chrome/Edge/Chromium utilisable. */

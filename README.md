@@ -58,6 +58,9 @@ Variables utiles :
 | `TP_CONCURRENCY` | `3` | Requêtes simultanées vers Trustpilot |
 | `TP_SCAN_MAX_PAGES` | `40` | Pages d'entreprises explorées max par recherche d'avis |
 | `TP_SCAN_BUDGET_MS` | `20000` | Budget temps d'un scan d'avis |
+| `TP_RATE_LIMIT_PER_MIN` | `120` | Requêtes `/api/find` par minute et par client (`0` : sans limite) |
+| `TP_MAX_ACTIVE_SCANS` | `4` | Parcours simultanés au total (2 par client) |
+| `TP_CLIENT_IP_HEADER` | aucun | En-tête qui porte l'adresse du client derrière un proxy de confiance (`cf-connecting-ip` derrière Cloudflare) |
 
 ## Comment ça marche
 

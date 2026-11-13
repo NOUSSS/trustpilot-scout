@@ -26,6 +26,7 @@ import {
   CATEGORIES,
 } from './trustpilot.js';
 import { Collector, reviewMatches } from './reviews.js';
+import { RateLimiter } from './ratelimit.js';
 
 /** Pages de résultats maximum d'une collecte filtrée par le serveur. */
 const MAX_SCAN_PAGE = 50;
@@ -44,6 +45,13 @@ const reviewCache = new TtlCache({
 /** Mode retenu (sémantique ou mots-clés) par recherche, pour une pagination stable. */
 const plans = new TtlCache({ ttlMs: CONFIG.cacheTtlMs, maxEntries: CONFIG.cacheMaxEntries });
 const limiter = new Limiter(CONFIG.maxConcurrency);
+const rateLimiter = new RateLimiter({ max: CONFIG.rateLimitPerMin, windowMs: 60 * 1000 });
+/** Pages lues pour un parcours : elles passent après les recherches simples. */
+const BACKGROUND = { background: true };
+
+/** Identité d'un client pour les garde-fous : l'en-tête du proxy de confiance, sinon l'adresse de la connexion. */
+const clientKey = (req) =>
+  (CONFIG.clientIpHeader && req.get(CONFIG.clientIpHeader)) || req.socket.remoteAddress || 'inconnu';
 
 /**
  * Télécharge et lit une page. Une page sans données (challenge servi en 200,
@@ -65,9 +73,13 @@ async function fetchParsed(pathname, parse) {
 const cacheKey = (pathname, parse) => `${parse.name} ${pathname}`;
 
 /** Charge une page (cache + single-flight). */
-async function load(store, pathname, parse) {
-  const { value, hit, shared } = await cached(store, limiter, cacheKey(pathname, parse), () =>
-    fetchParsed(pathname, parse)
+async function load(store, pathname, parse, options) {
+  const { value, hit, shared } = await cached(
+    store,
+    limiter,
+    cacheKey(pathname, parse),
+    () => fetchParsed(pathname, parse),
+    options
   );
   return { payload: value, hit, shared };
 }
@@ -82,18 +94,18 @@ const SEMANTIC_MIN_RESULTS = 50;
  * La sémantique ramène parfois une poignée de résultats là où les mots-clés
  * en trouvent des centaines (« boulangerie paris » : 5 contre 1 095).
  */
-async function searchPlan(params) {
+async function searchPlan(params, options) {
   const first = { ...params, page: 1 };
   const key = buildPath(first, { semantic: false });
   const known = plans.get(key);
   if (known) return known;
 
-  const semantic = await load(cache, buildPath(first), parseSearchPage);
+  const semantic = await load(cache, buildPath(first), parseSearchPage, options);
   let plan = { semantic: true };
   const total = semantic.payload.pagination.totalResults;
   if (semantic.payload.source.searchMode !== 'domain' && total < SEMANTIC_MIN_RESULTS) {
     try {
-      const keyword = await load(cache, key, parseSearchPage);
+      const keyword = await load(cache, key, parseSearchPage, options);
       if (keyword.payload.pagination.totalResults > total) plan = { semantic: false };
     } catch {
       /* les mots-clés ont échoué : on garde la sémantique */
@@ -104,10 +116,10 @@ async function searchPlan(params) {
 }
 
 /** Page de résultats d'entreprises, dans le mode retenu pour cette recherche. */
-async function loadSearch(params) {
-  const plan = await searchPlan(params);
+async function loadSearch(params, options) {
+  const plan = await searchPlan(params, options);
   const pathname = buildPath(params, plan);
-  return { ...(await load(cache, pathname, parseSearchPage)), plan };
+  return { ...(await load(cache, pathname, parseSearchPage, options)), plan };
 }
 
 const collector = new Collector();
@@ -170,9 +182,10 @@ async function loadDomain(domain, params) {
 /** Page `n` de la source d'entreprises : le secteur s'il est choisi, sinon la recherche. */
 async function loadSource(p, page) {
   if (p.category) {
-    return (await load(cache, buildCategoryPath({ ...categorySource(p), page }), parseCategoryPage)).payload;
+    const pathname = buildCategoryPath({ ...categorySource(p), page });
+    return (await load(cache, pathname, parseCategoryPage, BACKGROUND)).payload;
   }
-  return (await loadSearch({ ...searchSource(p), page })).payload;
+  return (await loadSearch({ ...searchSource(p), page }, BACKGROUND)).payload;
 }
 
 /** Filtre appliqué par le serveur quand Trustpilot ne sait pas le faire (secteur). */
@@ -244,7 +257,7 @@ async function findList(p) {
  * Collecte filtrée par le serveur : fouille des avis (`scan`) ou filtre
  * d'appoint sur un secteur (`list`). Pagination propre, sur ce qui a été trouvé.
  */
-async function findCollected(p) {
+async function findCollected(p, owner) {
   const scan = p.kind === 'scan';
   const perPage = scan ? CONFIG.reviewPerPage : 20;
   const job = {
@@ -257,7 +270,8 @@ async function findCollected(p) {
       ? async (business) => {
           // Même page que la fiche de l'entreprise : l'ouvrir ensuite sort du cache.
           const path = buildCompanyPath(business.domain, scanReviewParams(p));
-          const { total, matches } = reviewMatches((await load(reviewCache, path, parseCompanyPage)).payload);
+          const loaded = await load(reviewCache, path, parseCompanyPage, BACKGROUND);
+          const { total, matches } = reviewMatches(loaded.payload);
           return total ? { ...business, matchCount: total, snippets: matches } : null;
         }
       : null,
@@ -268,7 +282,7 @@ async function findCollected(p) {
   ]);
   const fresh = !collector.peek(key);
   const page = Math.min(p.page, MAX_SCAN_PAGE);
-  const state = await collector.ensure(key, job, page * perPage + 1);
+  const state = await collector.ensure(key, job, page * perPage + 1, { owner });
 
   // Page au-delà des résultats disponibles : on retombe sur la dernière utile.
   const lastUseful = Math.max(1, Math.ceil(state.hits.length / perPage));
@@ -297,6 +311,14 @@ async function findCollected(p) {
   };
 }
 
+/** Limite de débit par client, avant toute validation : une requête refusée ne coûte rien. */
+app.use('/api/find', (req, res, next) => {
+  const wait = CONFIG.rateLimitPerMin > 0 ? rateLimiter.take(clientKey(req)) : 0;
+  if (!wait) return next();
+  res.set('Retry-After', String(wait));
+  res.status(429).json({ error: `Trop de requêtes : réessaie dans ${wait} s` });
+});
+
 app.get('/api/find', async (req, res) => {
   let params;
   try {
@@ -308,12 +330,13 @@ app.get('/api/find', async (req, res) => {
   try {
     let body;
     if (params.kind === 'company') body = await findCompany(params);
-    else if (params.kind === 'scan' || needsServerFilter(params)) body = await findCollected(params);
+    else if (params.kind === 'scan' || needsServerFilter(params)) body = await findCollected(params, clientKey(req));
     else body = await findList(params);
     res.set('Cache-Control', body.collected ? 'no-store' : 'public, max-age=60');
     res.json(body);
   } catch (err) {
     const status = errorStatus(err);
+    if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
     res.status(status).json({
       error:
         status === 404 && params.category && params.kind !== 'company'
