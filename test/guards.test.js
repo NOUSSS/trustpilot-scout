@@ -102,9 +102,10 @@ test('Collector : un parcours que son client a quitté s’arrête et lui rend s
   const runs = [start('k1', left.signal), start('k2')];
   await assert.rejects(start('k3'), (err) => err.status === 429);
 
-  // Le client abandonne k1 (il a changé un filtre) : la place est rendue tout de suite.
+  // Le client abandonne k1 (il a changé un filtre) : tant que sa page en cours
+  // n'est pas finie, le parcours compte encore pour lui.
   left.abort();
-  runs.push(start('k3'));
+  await assert.rejects(start('k3'), (err) => err.status === 429);
 
   release();
   await Promise.all(runs);
@@ -119,7 +120,8 @@ test('Collector : un parcours que son client a quitté s’arrête et lui rend s
   assert.equal(collector.peek('k2').scannedPages, CONFIG.reviewMaxScanPages);
   assert.equal(collector.peek('k2').waiters, 0);
 
-  // Redemandé, k1 reprend à la page suivante.
+  // La place est rendue, et k1, redemandé, reprend à la page suivante.
+  await start('k3');
   await start('k1');
   assert.equal(collector.peek('k1').scannedPages, CONFIG.reviewMaxScanPages);
 });

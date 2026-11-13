@@ -206,12 +206,13 @@ export class Collector {
 
   /**
    * Refuse un nouveau parcours quand trop sont déjà en cours, au total ou pour ce client.
-   * Un parcours abandonné (plus aucune requête ne l'attend) finit sa page en cours :
-   * il compte encore dans le total, plus pour son client.
+   * Un parcours abandonné (plus aucune requête ne l'attend) finit sa page en cours et
+   * compte jusque-là pour son client : sinon un seul client remplirait toutes les
+   * places en lançant puis en quittant des parcours. La page, elle, patiente.
    */
   admit(owner) {
     const running = [...this.states.values()].filter((s) => s.running);
-    const mine = owner ? running.filter((s) => s.owner === owner && s.waiters > 0).length : 0;
+    const mine = owner ? running.filter((s) => s.owner === owner).length : 0;
     if (running.length < CONFIG.maxActiveScans && mine < CONFIG.maxScansPerClient) return;
     const err = new Error(
       mine >= CONFIG.maxScansPerClient

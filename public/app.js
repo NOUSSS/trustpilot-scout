@@ -693,7 +693,16 @@ function resetSubmit(controller) {
   els.submitLabel.textContent = 'Chercher';
 }
 
-async function go(page = 1, depth = 0) {
+/**
+ * Serveur occupé (les parcours précédents ne sont pas encore arrêtés) : la page
+ * patiente et réessaie au lieu d'afficher une erreur.
+ */
+const BUSY_WAIT_MS = 2000;
+const BUSY_MAX_WAITS = 12;
+/** Au-delà de ce délai annoncé par le serveur, c'est une vraie limite : on l'affiche. */
+const BUSY_MAX_RETRY_AFTER_S = 5;
+
+async function go(page = 1, depth = 0, waits = 0) {
   const params = state.params ?? readForm();
   state.params = params;
   updateFields(params);
@@ -732,6 +741,14 @@ async function go(page = 1, depth = 0) {
   try {
     const res = await fetch('/api/find?' + qs, { signal: controller.signal });
     const data = await res.json().catch(() => ({}));
+    const retryAfter = Number(res.headers.get('Retry-After'));
+    const busy =
+      (res.status === 429 || res.status === 503) && retryAfter > 0 && retryAfter <= BUSY_MAX_RETRY_AFTER_S;
+    if (busy && waits < BUSY_MAX_WAITS) {
+      await new Promise((resolve) => setTimeout(resolve, BUSY_WAIT_MS));
+      if (state.controller !== controller) return;
+      return go(page, depth, waits + 1);
+    }
     if (!res.ok) throw new Error(data.error || `Erreur ${res.status}`);
     if (state.controller !== controller) return;
     state.page = data.params?.page ?? page;
