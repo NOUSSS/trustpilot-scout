@@ -37,6 +37,33 @@ const publicDir = path.join(here, '..', 'public');
 const app = express();
 app.disable('x-powered-by');
 
+/**
+ * Politique de sécurité du contenu : la page ne charge que ses propres
+ * scripts, les polices Google et les logos Trustpilot. Filet de sécurité
+ * autour des avis, écrits par des internautes et insérés dans la page.
+ */
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' https://fonts.googleapis.com",
+  "font-src https://fonts.gstatic.com",
+  "img-src 'self' data: https://consumersiteimages.trustpilot.net",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+
+app.use((req, res, next) => {
+  res.set({
+    'Content-Security-Policy': CONTENT_SECURITY_POLICY,
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+  });
+  next();
+});
+
 const cache = new TtlCache({ ttlMs: CONFIG.cacheTtlMs, maxEntries: CONFIG.cacheMaxEntries });
 const reviewCache = new TtlCache({
   ttlMs: CONFIG.reviewCacheTtlMs,
