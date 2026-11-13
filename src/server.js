@@ -276,7 +276,8 @@ async function findCollected(p) {
   const lastUseful = Math.max(1, Math.ceil(state.hits.length / perPage));
   const current = Math.min(page, lastUseful);
   const offset = (current - 1) * perPage;
-  const more = !state.exhausted && !state.capped;
+  // Des entreprises en attente (avis illisibles pour l'instant) : relancer peut encore en trouver.
+  const more = (!state.exhausted && !state.capped) || state.pending.length > 0;
 
   return {
     kind: p.kind,

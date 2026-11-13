@@ -38,6 +38,12 @@ export function parseReviewSearch(html) {
   return { total, matches };
 }
 
+/** Essais d'interrogation des avis d'une entreprise avant de l'abandonner. */
+const MAX_ENRICH_TRIES = 3;
+
+/** Erreur définitive (fiche absente, refus) : réessayer ne changerait rien. */
+const isPermanent = (err) => err.status >= 400 && err.status < 500 && err.status !== 429;
+
 /**
  * Collecteur incrémental : avance dans les pages d'une source d'entreprises
  * (recherche ou secteur), garde celles qui passent le filtre, puis, si besoin,
@@ -67,6 +73,8 @@ export class Collector {
     state = {
       key,
       hits: [],
+      /** Entreprises dont les avis n'ont pas pu être lus : `{ business, tries }`, réessayées au prochain appel. */
+      pending: [],
       seen: new Set(),
       scannedPages: 0,
       scannedItems: 0,
@@ -105,19 +113,33 @@ export class Collector {
     for (const b of targets) state.seen.add(b.domain);
 
     // L'ordre de poussée suit l'ordre de la source pour une pagination stable.
-    const results = job.enrich
-      ? await Promise.all(
-          targets.map(async (business) => {
-            try {
-              return await job.enrich(business);
-            } catch {
-              return null;
-            }
-          })
-        )
-      : targets;
+    if (!job.enrich) state.hits.push(...targets);
+    else await this.enrichAll(state, job, targets.map((business) => ({ business, tries: 0 })));
+  }
 
-    for (const hit of results) if (hit) state.hits.push(hit);
+  /**
+   * Interroge les avis de chaque entreprise. Un échec passager n'est pas une
+   * absence de correspondance : l'entreprise reste en attente pour le prochain appel.
+   */
+  async enrichAll(state, job, entries) {
+    const results = await Promise.all(
+      entries.map(async ({ business, tries }) => {
+        try {
+          return { hit: await job.enrich(business) };
+        } catch (err) {
+          if (isPermanent(err)) return { hit: null };
+          if (tries + 1 >= MAX_ENRICH_TRIES) {
+            console.warn('[scan] avis illisibles, entreprise abandonnée:', business.domain, err.message);
+            return { hit: null };
+          }
+          return { retry: { business, tries: tries + 1 } };
+        }
+      })
+    );
+    for (const { hit, retry } of results) {
+      if (retry) state.pending.push(retry);
+      else if (hit) state.hits.push(hit);
+    }
   }
 
   /**
@@ -127,16 +149,16 @@ export class Collector {
    */
   async ensure(key, job, needed) {
     const state = this.state(key);
-    if (state.running) {
-      await state.running.catch(() => {});
-      return state;
-    }
-    if (state.hits.length >= needed || state.exhausted || state.capped) return state;
+    // Un scan en cours visait peut-être moins de résultats : on attend sa fin, puis on complète.
+    while (state.running) await state.running.catch(() => {});
+    const sourceDone = state.exhausted || state.capped;
+    if (!state.pending.length && (state.hits.length >= needed || sourceDone)) return state;
 
     state.partial = false;
     state.error = null;
     state.running = (async () => {
       const started = Date.now();
+      if (state.pending.length) await this.enrichAll(state, job, state.pending.splice(0));
       while (
         state.hits.length < needed &&
         !state.exhausted &&
@@ -156,6 +178,7 @@ export class Collector {
         state.capped = true;
         state.partial = true;
       }
+      if (state.pending.length) state.partial = true;
     })();
     state.running
       .catch((err) => {
