@@ -725,49 +725,46 @@ article.card:hover { box-shadow: 0 8px 24px -12px rgba(17, 17, 17, 0.18); }
 .is-skeleton .tag,
 .is-skeleton .meter { background: var(--chip); color: transparent; }
 
-.is-skeleton .avatar img { display: none; }
+.is-skeleton .avatar img,
+.is-skeleton .meter span { display: none; }
+.is-skeleton .score svg { visibility: hidden; }
+.is-skeleton .snippet::before { background: var(--chip); }
 
-.is-skeleton .card-title strong,
-.is-skeleton .card-title small,
-.is-skeleton .score,
-.is-skeleton .reviews,
-.is-skeleton .snippet p,
-.is-skeleton .snippet small {
+/* Chaque ligne garde la hauteur du vrai texte ; la barre est dessinée dessous. */
+.is-skeleton .sk-line {
+  display: block;
+  position: relative;
   color: transparent;
-  background: var(--chip);
-  border-radius: 4px;
+  white-space: pre;
 }
+.is-skeleton .sk-line * { color: transparent; }
+.is-skeleton .sk-line::before {
+  content: "";
+  position: absolute;
+  inset: 50% 0 auto;
+  height: 0.8em;
+  translate: 0 -50%;
+  border-radius: 4px;
+  background: var(--chip);
+}
+/* Dernière ligne d'un paragraphe plus courte, comme un vrai texte. */
+.is-skeleton .sk-line:last-child:not(:only-child) { width: 60%; }
 
-.is-skeleton .card-title strong { width: 70%; white-space: pre-line; }
+.is-skeleton .card-title strong { width: 70%; }
 .is-skeleton .card-title small { width: 45%; }
 .is-skeleton .score { width: 64px; }
 .is-skeleton .reviews { width: 80px; }
-.is-skeleton .reviews b { color: transparent; }
-.is-skeleton .meter span { display: none; }
 /* Deux lignes de tags, le cas le plus courant, à toute largeur. */
 .is-skeleton .tags .tag:nth-child(1) { width: 55%; }
 .is-skeleton .tags .tag:nth-child(2) { width: 30%; }
 .is-skeleton .tags .tag:nth-child(3) { width: 45%; }
 .is-skeleton .matches { width: 64px; }
-.is-skeleton .snippet::before { background: var(--chip); }
-.is-skeleton .snippet p { white-space: pre-line; }
 .is-skeleton .snippet small { width: 50%; }
-.is-skeleton .score svg { visibility: hidden; }
-.is-skeleton .review-who,
-.is-skeleton .review-date,
-.is-skeleton .review-title,
-.is-skeleton .review-text,
-.is-skeleton .review-meta {
-  color: transparent;
-  background: var(--chip);
-  border-radius: 4px;
-}
 .is-skeleton .review-who { flex: 0 1 40%; }
 .is-skeleton .review-date { width: 72px; }
 .is-skeleton .review-title { width: 60%; }
-.is-skeleton .review-text { white-space: pre-line; }
-.is-skeleton .review-meta { width: 30%; }
-.is-skeleton .review-meta a { color: transparent; }
+/* « voir l'avis » est connu : la barre prend sa largeur exacte. */
+.is-skeleton .review-meta { width: fit-content; }
 
 .is-skeleton {
   animation: breathe 1.4s ease-in-out infinite;

@@ -428,7 +428,27 @@ const SKELETON_REVIEW = {
   text: [NB, NB, NB, NB].join('\n'), language: '', replied: false, url: '#',
 };
 
+/** Textes des squelettes : une barre par ligne, posée sous un texte masqué. */
+const SKELETON_TEXTS = [
+  '.card-title strong', '.card-title small', '.reviews',
+  '.snippet p', '.snippet small',
+  '.review-who', '.review-date', '.review-title', '.review-text', '.review-meta',
+].join(',');
+
+function skeletonLines(el) {
+  const lines = el.textContent.split('\n');
+  if (lines.length === 1) {
+    // Une seule ligne : on garde le contenu (un texte connu garde sa largeur).
+    const line = O('span', 'sk-line');
+    line.append(...el.childNodes);
+    el.append(line);
+  } else {
+    el.replaceChildren(...lines.map((text) => O('span', 'sk-line', text)));
+  }
+}
+
 function skeletonize(card) {
+  card.querySelectorAll(SKELETON_TEXTS).forEach(skeletonLines);
   card.classList.add('is-skeleton');
   card.setAttribute('aria-hidden', 'true');
   card.removeAttribute('href');
