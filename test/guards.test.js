@@ -81,3 +81,45 @@ test('Collector refuse un parcours de plus par client, puis au total', async () 
   // Les places sont rendues.
   await start('k6', 'ip-c');
 });
+
+
+test('Collector : un parcours que son client a quitté s’arrête et lui rend sa place', async () => {
+  const collector = new Collector();
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  // Source sans fin : seul le départ du client (ou le plafond de pages) arrête le parcours.
+  const job = {
+    loadPage: async (page) => {
+      await gate;
+      return { items: [{ domain: `d${page}.fr` }], pagination: { totalResults: 999, totalPages: 999 } };
+    },
+    keep: () => false,
+    enrich: null,
+  };
+  const left = new AbortController();
+  const start = (key, signal) => collector.ensure(key, job, 9, { owner: 'ip-a', signal });
+
+  const runs = [start('k1', left.signal), start('k2')];
+  await assert.rejects(start('k3'), (err) => err.status === 429);
+
+  // Le client abandonne k1 (il a changé un filtre) : la place est rendue tout de suite.
+  left.abort();
+  runs.push(start('k3'));
+
+  release();
+  await Promise.all(runs);
+
+  // k1 s'est arrêté après sa page en cours, sans être clos : il reprendra là si on le redemande.
+  const abandoned = collector.peek('k1');
+  assert.equal(abandoned.scannedPages, 1);
+  assert.equal(abandoned.partial, true);
+  assert.equal(abandoned.capped, false);
+  assert.equal(abandoned.waiters, 0);
+  // Les autres sont allés au bout du plafond de pages.
+  assert.equal(collector.peek('k2').scannedPages, CONFIG.reviewMaxScanPages);
+  assert.equal(collector.peek('k2').waiters, 0);
+
+  // Redemandé, k1 reprend à la page suivante.
+  await start('k1');
+  assert.equal(collector.peek('k1').scannedPages, CONFIG.reviewMaxScanPages);
+});

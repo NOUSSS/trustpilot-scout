@@ -71,6 +71,8 @@ export class Collector {
       updatedAt: Date.now(),
       running: null,
       owner: null,
+      /** Requêtes qui attendent encore ce parcours. */
+      waiters: 0,
     };
     this.states.set(key, state);
     this.prune();
@@ -133,10 +135,28 @@ export class Collector {
    * Un scan arrêté par le budget reprend là où il s'était arrêté au prochain appel ;
    * seul le plafond de pages est définitif.
    */
-  async ensure(key, job, needed, { owner = null } = {}) {
+  async ensure(key, job, needed, { owner = null, signal = null } = {}) {
     const state = this.state(key);
+    if (signal?.aborted) return state;
+    // `signal` s'interrompt quand le client de la requête est parti : le parcours
+    // que plus personne n'attend s'arrête et rend sa place.
+    state.waiters++;
+    const leave = () => {
+      state.waiters--;
+    };
+    signal?.addEventListener('abort', leave, { once: true });
+    try {
+      return await this.advance(state, job, needed, owner, signal);
+    } finally {
+      signal?.removeEventListener('abort', leave);
+      if (!signal?.aborted) leave();
+    }
+  }
+
+  async advance(state, job, needed, owner, signal) {
     // Un scan en cours visait peut-être moins de résultats : on attend sa fin, puis on complète.
     while (state.running) await state.running.catch(() => {});
+    if (signal?.aborted) return state;
     const sourceDone = state.exhausted || state.capped;
     if (!state.pending.length && (state.hits.length >= needed || sourceDone)) return state;
 
@@ -153,7 +173,8 @@ export class Collector {
         state.scannedPages < CONFIG.reviewMaxScanPages &&
         state.hits.length < CONFIG.reviewMaxHits
       ) {
-        if (Date.now() - started > CONFIG.reviewScanBudgetMs) {
+        // Budget dépassé, ou plus aucune requête n'attend : on s'arrête, la suite reprendra d'ici.
+        if (Date.now() - started > CONFIG.reviewScanBudgetMs || !state.waiters) {
           state.partial = true;
           break;
         }
@@ -183,10 +204,14 @@ export class Collector {
     return state;
   }
 
-  /** Refuse un nouveau parcours quand trop sont déjà en cours, au total ou pour ce client. */
+  /**
+   * Refuse un nouveau parcours quand trop sont déjà en cours, au total ou pour ce client.
+   * Un parcours abandonné (plus aucune requête ne l'attend) finit sa page en cours :
+   * il compte encore dans le total, plus pour son client.
+   */
   admit(owner) {
     const running = [...this.states.values()].filter((s) => s.running);
-    const mine = owner ? running.filter((s) => s.owner === owner).length : 0;
+    const mine = owner ? running.filter((s) => s.owner === owner && s.waiters > 0).length : 0;
     if (running.length < CONFIG.maxActiveScans && mine < CONFIG.maxScansPerClient) return;
     const err = new Error(
       mine >= CONFIG.maxScansPerClient

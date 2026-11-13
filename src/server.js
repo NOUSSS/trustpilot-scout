@@ -257,7 +257,7 @@ async function findList(p) {
  * Collecte filtrée par le serveur : fouille des avis (`scan`) ou filtre
  * d'appoint sur un secteur (`list`). Pagination propre, sur ce qui a été trouvé.
  */
-async function findCollected(p, owner) {
+async function findCollected(p, owner, signal) {
   const scan = p.kind === 'scan';
   const perPage = scan ? CONFIG.reviewPerPage : 20;
   const job = {
@@ -282,7 +282,7 @@ async function findCollected(p, owner) {
   ]);
   const fresh = !collector.peek(key);
   const page = Math.min(p.page, MAX_SCAN_PAGE);
-  const state = await collector.ensure(key, job, page * perPage + 1, { owner });
+  const state = await collector.ensure(key, job, page * perPage + 1, { owner, signal });
 
   // Page au-delà des résultats disponibles : on retombe sur la dernière utile.
   const lastUseful = Math.max(1, Math.ceil(state.hits.length / perPage));
@@ -327,10 +327,18 @@ app.get('/api/find', async (req, res) => {
     return res.status(err.status || 400).json({ error: err.message });
   }
 
+  // Client parti avant la réponse (recherche remplacée, onglet fermé) : son parcours n'a plus à continuer pour lui.
+  const gone = new AbortController();
+  res.on('close', () => {
+    if (!res.writableEnded) gone.abort();
+  });
+
   try {
     let body;
     if (params.kind === 'company') body = await findCompany(params);
-    else if (params.kind === 'scan' || needsServerFilter(params)) body = await findCollected(params, clientKey(req));
+    else if (params.kind === 'scan' || needsServerFilter(params)) {
+      body = await findCollected(params, clientKey(req), gone.signal);
+    }
     else body = await findList(params);
     res.set('Cache-Control', body.collected ? 'no-store' : 'public, max-age=60');
     res.json(body);
