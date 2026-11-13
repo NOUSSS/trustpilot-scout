@@ -49,14 +49,14 @@ const limiter = new Limiter(CONFIG.maxConcurrency);
  * page tronquée) relance une fois la session avant d'abandonner.
  */
 async function fetchParsed(pathname, parse) {
-  const html = await session.fetchHtml(pathname);
+  const { html, generation } = await session.fetchPage(pathname);
   try {
     return parse(html);
   } catch (err) {
     if (!err.retryable) throw err;
     console.warn('[parse] page inattendue, nouvelle session:', pathname);
-    await session.resetAuth();
-    return parse(await session.fetchHtml(pathname));
+    await session.resetAuth(generation);
+    return parse((await session.fetchPage(pathname)).html);
   }
 }
 

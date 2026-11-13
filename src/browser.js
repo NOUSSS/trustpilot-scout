@@ -20,23 +20,38 @@ function withTimeout(promise, ms) {
  * puis toutes les pages sont récupérées par fetch() dans son contexte
  * (léger : pas de rendu DOM, pas de rechargement complet).
  */
-class BrowserSession {
-  constructor() {
+export class BrowserSession {
+  /** @param {{ launchBrowser?: (options: object) => Promise<any> }} [deps] remplacé par un faux dans les tests */
+  constructor({
+    launchBrowser = (options) => puppeteer.launch({ executablePath: findBrowser(), ...options }),
+  } = {}) {
+    this.launchBrowser = launchBrowser;
     this.browser = null;
     this.context = null;
     this.page = null;
     this.tokenAt = 0;
     this.authPromise = null;
+    this.launchPromise = null;
+    /** Change à chaque contexte fermé : une requête servie par un ancien contexte ne relance rien. */
+    this.generation = 0;
   }
 
   get authenticated() {
     return Boolean(this.tokenAt) && Date.now() - this.tokenAt < 5 * 60 * 1000;
   }
 
-  async launch() {
-    const executablePath = findBrowser();
-    this.browser = await puppeteer.launch({
-      executablePath,
+  /** Lance le navigateur une seule fois, même si plusieurs requêtes arrivent ensemble. */
+  launch() {
+    if (!this.launchPromise) {
+      this.launchPromise = this.startBrowser().finally(() => {
+        this.launchPromise = null;
+      });
+    }
+    return this.launchPromise;
+  }
+
+  async startBrowser() {
+    const browser = await this.launchBrowser({
       headless: 'new',
       args: [
         '--no-sandbox',
@@ -49,12 +64,15 @@ class BrowserSession {
       ],
       protocolTimeout: 120000,
     });
-    this.browser.on('disconnected', () => {
+    browser.on('disconnected', () => {
+      // Un ancien navigateur qui se ferme ne doit pas effacer la session du nouveau.
+      if (this.browser !== browser) return;
       this.browser = null;
       this.context = null;
       this.page = null;
       this.tokenAt = 0;
-      });
+    });
+    this.browser = browser;
   }
 
   async newPage() {
@@ -76,10 +94,11 @@ class BrowserSession {
    */
   async authenticate() {
     await this.dropContext();
-    this.page = await this.newPage();
+    const page = await this.newPage();
+    this.page = page;
 
     await withTimeout(
-      this.page
+      page
         .goto(ORIGIN + '/', { waitUntil: 'domcontentloaded', timeout: CONFIG.tokenTimeoutMs })
         .catch(() => {}),
       CONFIG.tokenTimeoutMs + 3000
@@ -88,7 +107,7 @@ class BrowserSession {
     const deadline = Date.now() + CONFIG.tokenTimeoutMs;
     let token = null;
     while (Date.now() < deadline) {
-      const cookies = await this.page.cookies().catch(() => []);
+      const cookies = await page.cookies().catch(() => []);
       token = cookies.find(
         (c) => c.name === 'aws-waf-token' && (!c.expires || c.expires * 1000 > Date.now())
       );
@@ -101,7 +120,7 @@ class BrowserSession {
     // Le WAF peut répondre 403 quelques instants après avoir posé le cookie.
     for (let i = 0; i < 10; i++) {
       await new Promise((r) => setTimeout(r, i === 0 ? 500 : 1000));
-      const ok = await this.page
+      const ok = await page
         .evaluate(async () => {
           const res = await fetch('/search?query=test', { cache: 'no-store', credentials: 'include' });
           return res.status === 200;
@@ -121,13 +140,19 @@ class BrowserSession {
     const context = this.context;
     this.page = null;
     this.context = null;
+    if (page || context) this.generation++;
     // La fermeture peut rester bloquée si un fetch est en cours : on borne.
     await withTimeout(page?.close().catch(() => {}), 4000);
     await withTimeout(context?.close().catch(() => {}), 4000);
   }
 
-  async resetAuth() {
-    this.authPromise = null;
+  /**
+   * Abandonne le contexte de la génération donnée. Sans effet si une autre
+   * requête l'a déjà fait ou si une authentification est en cours : un seul
+   * échec ne relance la session qu'une fois.
+   */
+  async resetAuth(generation = this.generation) {
+    if (generation !== this.generation || this.authPromise) return;
     await this.dropContext();
   }
 
@@ -147,10 +172,11 @@ class BrowserSession {
   }
 
   /**
-   * Récupère le HTML d'une page Trustpilot.
+   * Récupère le HTML d'une page Trustpilot, avec la génération de session qui l'a servie.
    * @param {string} urlpath chemin commençant par "/"
+   * @returns {Promise<{ html: string, generation: number }>}
    */
-  async fetchHtml(urlpath) {
+  async fetchPage(urlpath) {
     let lastError = null;
 
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -163,6 +189,7 @@ class BrowserSession {
         continue;
       }
       const page = this.page;
+      const generation = this.generation;
       if (!page) continue;
       try {
         const result = await withTimeout(
@@ -191,12 +218,14 @@ class BrowserSession {
         if (!result) throw new Error('Délai de récupération dépassé');
 
         if (result.status === 200) {
-          this.tokenAt = Date.now();
-          return result.text;
+          // Une réponse d'un ancien contexte ne dit rien du jeton courant.
+          if (generation === this.generation) this.tokenAt = Date.now();
+          return { html: result.text, generation };
         }
-        if (result.status === 403 || result.status === 429 || result.status === 503) {
+        // 202 : challenge AWS WAF servi à la place de la page.
+        if ([202, 403, 429, 503].includes(result.status)) {
           lastError = new Error(`Trustpilot a répondu ${result.status}`);
-          await this.resetAuth();
+          await this.resetAuth(generation);
           continue;
         }
         const err = new Error(`Trustpilot a répondu ${result.status}`);
@@ -206,7 +235,7 @@ class BrowserSession {
         lastError = err;
         if (err.status && err.status !== 429 && err.status !== 503) throw err;
         console.warn('[fetch] tentative', attempt + 1, 'échouée:', err.message);
-        await this.resetAuth();
+        await this.resetAuth(generation);
       }
     }
     const err = new Error(
