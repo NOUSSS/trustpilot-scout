@@ -1,3 +1,5 @@
+import { toCsv } from './csv.js';
+
 const $ = (sel) => document.querySelector(sel);
 
 const els = {
@@ -790,7 +792,6 @@ function loadFromUrl() {
 function exportCsv() {
   const data = state.data;
   if (!data?.items.length) return;
-  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
   let rows;
 
   if (data.kind === 'company') {
@@ -817,8 +818,7 @@ function exportCsv() {
     }
   }
 
-  const csv = rows.map((r) => r.map(esc).join(';')).join('\r\n');
-  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+  const blob = new Blob([toCsv(rows)], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   const p = data.params;
