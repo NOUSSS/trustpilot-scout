@@ -6,6 +6,7 @@ import {
   needsServerFilter,
   searchSource,
   companyReviewParams,
+  scanReviewParams,
   buildPath,
   buildCategoryPath,
   buildCompanyPath,
@@ -278,4 +279,19 @@ test('parseCompanyPage : connexion exigée ou fiche absente', () => {
     (err) => err.status === 403 && !err.retryable
   );
   assert.throws(() => parseCompanyPage(page({})), (err) => err.retryable === true);
+});
+
+test('la fouille et la fiche d’une entreprise lisent la même page d’avis', () => {
+  for (const query of ['q=fnac.com&term=frais&rating=1&lang=fr', 'q=fnac.com&rating=1', 'q=fnac.com&lang=fr']) {
+    const p = find(query);
+    assert.equal(
+      buildCompanyPath('fnac.com', scanReviewParams(p)),
+      buildCompanyPath('fnac.com', companyReviewParams(p)),
+      query
+    );
+  }
+  assert.equal(
+    buildCompanyPath('fnac.com', scanReviewParams(find('q=x&term=frais&rating=1&lang=fr'))),
+    '/review/fnac.com?languages=fr&search=frais&stars=1&sort=relevance'
+  );
 });

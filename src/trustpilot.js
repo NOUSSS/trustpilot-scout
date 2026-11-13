@@ -239,6 +239,18 @@ export const companyReviewParams = (p) => ({
   page: p.page,
 });
 
+/**
+ * Paramètres de la page d'avis lue par la fouille : la première page, triée
+ * comme l'ouvrira la fiche de l'entreprise (même URL, donc même entrée de cache).
+ */
+export const scanReviewParams = (p) => ({
+  term: p.term,
+  rating: p.rating,
+  language: p.language,
+  sort: p.term ? 'relevance' : 'recency',
+  page: 1,
+});
+
 export function buildCompanyPath(domain, params) {
   const qs = new URLSearchParams();
   qs.set('languages', params.language || 'all');

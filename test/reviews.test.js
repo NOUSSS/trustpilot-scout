@@ -1,12 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CONFIG } from '../src/config.js';
-import { Collector, parseReviewSearch, reviewFilterPath } from '../src/reviews.js';
-
-const page = (props) =>
-  `<html><body><script id="__NEXT_DATA__" type="application/json">${JSON.stringify({
-    props: { pageProps: props },
-  })}</script></body></html>`;
+import { Collector, reviewMatches } from '../src/reviews.js';
 
 /** Source factice : `pages` pages de `perPage` entreprises. */
 function source({ pages = 3, perPage = 20 } = {}) {
@@ -25,37 +20,36 @@ function source({ pages = 3, perPage = 20 } = {}) {
   };
 }
 
-test('reviewFilterPath', () => {
-  assert.equal(
-    reviewFilterPath('fnac.com', { term: 'frais de port', rating: '1', language: 'fr' }),
-    '/review/fnac.com?languages=fr&search=frais+de+port&stars=1&sort=relevance'
-  );
-  assert.equal(reviewFilterPath('fnac.com', {}), '/review/fnac.com?languages=all&sort=recency');
-});
-
-test('parseReviewSearch : total et extraits bornés', () => {
+test('reviewMatches : total et extraits bornés', () => {
   const review = (id) => ({
     id,
     title: 'Titre',
     text: `<em>frais</em> ${'x'.repeat(400)}`,
     rating: 2,
-    consumer: { displayName: 'Ana', countryCode: 'FR' },
+    author: 'Ana',
+    country: 'FR',
     language: 'fr',
-    dates: { publishedDate: '2026-01-02T10:00:00.000Z' },
+    date: '2026-01-02T10:00:00.000Z',
+    replied: true,
+    url: `https://www.trustpilot.com/reviews/${id}`,
   });
-  const parsed = parseReviewSearch(
-    page({ filters: { pagination: { totalCount: 12 } }, reviews: ['a', 'b', 'c', 'd'].map(review) })
-  );
-  assert.equal(parsed.total, 12);
-  assert.equal(parsed.matches.length, CONFIG.reviewSnippets);
+  const summary = reviewMatches({
+    reviews: ['a', 'b', 'c', 'd'].map(review),
+    pagination: { totalResults: 12 },
+  });
+  assert.equal(summary.total, 12);
+  assert.equal(summary.matches.length, CONFIG.reviewSnippets);
   assert.deepEqual(
-    { ...parsed.matches[0], text: parsed.matches[0].text.length },
+    { ...summary.matches[0], text: summary.matches[0].text.length },
     {
       id: 'a', text: 320, title: 'Titre', rating: 2, author: 'Ana', country: 'FR', language: 'fr',
       date: '2026-01-02T10:00:00.000Z', url: 'https://www.trustpilot.com/reviews/a',
     }
   );
-  assert.deepEqual(parseReviewSearch(page({ reviews: [review('a')] })), { total: 0, matches: [] });
+  assert.deepEqual(
+    reviewMatches({ reviews: [review('a')], pagination: { totalResults: 0 } }),
+    { total: 0, matches: [] }
+  );
 });
 
 test('Collector s’arrête dès qu’il a assez de résultats', async () => {

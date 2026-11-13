@@ -10,6 +10,7 @@ import {
   searchSource,
   categorySource,
   companyReviewParams,
+  scanReviewParams,
   buildPath,
   buildCategoryPath,
   buildCompanyPath,
@@ -24,7 +25,7 @@ import {
   COUNTRIES,
   CATEGORIES,
 } from './trustpilot.js';
-import { Collector, parseReviewSearch, reviewFilterPath } from './reviews.js';
+import { Collector, reviewMatches } from './reviews.js';
 
 /** Pages de résultats maximum d'une collecte filtrée par le serveur. */
 const MAX_SCAN_PAGE = 50;
@@ -60,10 +61,7 @@ async function fetchParsed(pathname, parse) {
   }
 }
 
-/**
- * Clé de cache : une même URL peut être lue par deux parseurs (avis filtrés
- * d'une entreprise et extraits de fouille), chacun garde son résultat.
- */
+/** Clé de cache : le parseur et le chemin de la page. */
 const cacheKey = (pathname, parse) => `${parse.name} ${pathname}`;
 
 /** Charge une page (cache + single-flight). */
@@ -249,7 +247,6 @@ async function findList(p) {
 async function findCollected(p) {
   const scan = p.kind === 'scan';
   const perPage = scan ? CONFIG.reviewPerPage : 20;
-  const reviewFilters = { term: p.term, rating: p.rating, language: p.language };
   const job = {
     loadPage: (page) => loadSource(p, page),
     keep: (() => {
@@ -258,8 +255,9 @@ async function findCollected(p) {
     })(),
     enrich: scan
       ? async (business) => {
-          const path = reviewFilterPath(business.domain, reviewFilters);
-          const { total, matches } = (await load(reviewCache, path, parseReviewSearch)).payload;
+          // Même page que la fiche de l'entreprise : l'ouvrir ensuite sort du cache.
+          const path = buildCompanyPath(business.domain, scanReviewParams(p));
+          const { total, matches } = reviewMatches((await load(reviewCache, path, parseCompanyPage)).payload);
           return total ? { ...business, matchCount: total, snippets: matches } : null;
         }
       : null,

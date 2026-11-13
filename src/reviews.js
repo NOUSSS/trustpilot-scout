@@ -1,38 +1,23 @@
 import { CONFIG } from './config.js';
-import { pageProps } from './trustpilot.js';
 
 /**
- * Avis d'une entreprise filtrés par texte, note et langue. Avec un texte,
- * Trustpilot entoure les correspondances de <em> et trie par pertinence.
+ * Résumé d'une page d'avis déjà lue par `parseCompanyPage` : nombre total de
+ * correspondances + extraits. Le texte garde les balises <em> de surlignage de Trustpilot.
  */
-export function reviewFilterPath(domain, { term, rating, language }) {
-  const qs = new URLSearchParams({ languages: language || 'all' });
-  if (term) qs.set('search', term);
-  if (rating) qs.set('stars', rating);
-  qs.set('sort', term ? 'relevance' : 'recency');
-  return `/review/${encodeURIComponent(domain)}?${qs.toString()}`;
-}
-
-/**
- * Lit une page d'avis filtrés : nombre total de correspondances + extraits.
- * Le texte renvoyé contient les balises <em> de surlignage de Trustpilot.
- */
-export function parseReviewSearch(html) {
-  const props = pageProps(html);
-
-  const total = Number(props?.filters?.pagination?.totalCount ?? 0);
+export function reviewMatches(page) {
+  const total = page.pagination.totalResults;
   if (!total) return { total: 0, matches: [] };
 
-  const matches = (props.reviews ?? []).slice(0, CONFIG.reviewSnippets).map((r) => ({
+  const matches = page.reviews.slice(0, CONFIG.reviewSnippets).map((r) => ({
     id: r.id,
-    text: (r.text ?? '').slice(0, 320),
-    title: r.title ?? '',
-    rating: Number(r.rating ?? 0),
-    author: r.consumer?.displayName ?? 'Anonyme',
-    country: r.consumer?.countryCode ?? '',
-    language: r.language ?? '',
-    date: r.dates?.publishedDate ?? r.dates?.experiencedDate ?? null,
-    url: `https://www.trustpilot.com/reviews/${r.id}`,
+    text: r.text.slice(0, 320),
+    title: r.title,
+    rating: r.rating,
+    author: r.author,
+    country: r.country,
+    language: r.language,
+    date: r.date,
+    url: r.url,
   }));
 
   return { total, matches };
