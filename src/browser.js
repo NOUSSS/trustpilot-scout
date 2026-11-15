@@ -32,6 +32,10 @@ export class BrowserSession {
     this.tokenAt = 0;
     this.authPromise = null;
     this.launchPromise = null;
+    /** Relève d'un contexte refusé : les nouvelles requêtes l'attendent au lieu d'y entrer. */
+    this.resetPromise = null;
+    /** Requêtes en cours dans l'onglet (promesses bornées) : on ne ferme pas l'onglet sous elles. */
+    this.inflight = new Set();
     /** Change à chaque contexte fermé : une requête servie par un ancien contexte ne relance rien. */
     this.generation = 0;
   }
@@ -136,7 +140,15 @@ export class BrowserSession {
     throw new Error('Jeton WAF posé mais refusé');
   }
 
+  /** Attend la fin des requêtes en cours dans l'onglet, y compris celles parties entre-temps. */
+  async drain() {
+    while (this.inflight.size) await Promise.allSettled([...this.inflight]);
+  }
+
   async dropContext() {
+    // Fermer l'onglet sous un fetch en cours le fait échouer (« Target closed ») :
+    // chaque requête est déjà bornée, on la laisse finir.
+    await this.drain();
     this.tokenAt = 0;
     const page = this.page;
     const context = this.context;
@@ -149,21 +161,29 @@ export class BrowserSession {
   }
 
   /**
-   * Abandonne le contexte de la génération donnée. Sans effet si une autre
-   * requête l'a déjà fait ou si une authentification est en cours : un seul
-   * échec ne relance la session qu'une fois.
+   * Abandonne le contexte de la génération donnée, une fois ses requêtes en
+   * cours terminées. Sans effet si une autre requête l'a déjà fait ou si une
+   * authentification est en cours : plusieurs refus ne relancent la session
+   * qu'une fois.
    */
   async resetAuth(generation = this.generation) {
     if (generation !== this.generation || this.authPromise) return;
-    await this.dropContext();
+    if (!this.resetPromise) {
+      this.resetPromise = this.dropContext().finally(() => {
+        this.resetPromise = null;
+      });
+    }
+    await this.resetPromise;
   }
 
   async ensureReady() {
+    while (this.resetPromise) await this.resetPromise;
     if (!this.browser?.connected) {
       await this.launch();
       this.tokenAt = 0;
     }
-    if (!this.page || !this.authenticated) {
+    // Pendant une authentification, l'ancien onglet se vide : on n'y envoie plus rien.
+    if (this.authPromise || !this.page || !this.authenticated) {
       if (!this.authPromise) {
         this.authPromise = this.authenticate().finally(() => {
           this.authPromise = null;
@@ -194,7 +214,7 @@ export class BrowserSession {
       const generation = this.generation;
       if (!page) continue;
       try {
-        const result = await withTimeout(
+        const request = withTimeout(
           page.evaluate(
             async (url, timeout) => {
               const controller = new AbortController();
@@ -216,6 +236,8 @@ export class BrowserSession {
           ),
           CONFIG.fetchTimeoutMs + 5000
         );
+        this.inflight.add(request);
+        const result = await request.finally(() => this.inflight.delete(request));
 
         if (!result) throw new Error('Délai de récupération dépassé');
 
@@ -227,6 +249,8 @@ export class BrowserSession {
         // 202 : challenge AWS WAF servi à la place de la page.
         if ([202, 403, 429, 503].includes(result.status)) {
           lastError = new Error(`Trustpilot a répondu ${result.status}`);
+          // Le statut seul : le chemin peut contenir la recherche d'un utilisateur.
+          console.warn('[fetch] refus', result.status, 'à la tentative', attempt + 1, ': nouvelle session');
           await this.resetAuth(generation);
           continue;
         }

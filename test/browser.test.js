@@ -6,11 +6,15 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Session branchée sur un faux navigateur. `respond(url)` joue Trustpilot et
- * renvoie `{ status, text }`. `stats` compte les lancements et les onglets
- * ouverts (un onglet ouvert = une authentification).
+ * renvoie `{ status, text }` au bout de `delay(url)` ms. `stats` compte les
+ * lancements, les onglets ouverts (un onglet ouvert = une authentification),
+ * les requêtes envoyées par chemin et celles coupées par la fermeture de l'onglet.
  */
-function fakeSession(respond = (url) => ({ status: 200, text: `page ${url}` })) {
-  const stats = { launches: 0, pages: 0, browsers: [] };
+function fakeSession(
+  respond = (url) => ({ status: 200, text: `page ${url}` }),
+  { delay = () => 30 } = {}
+) {
+  const stats = { launches: 0, pages: 0, browsers: [], calls: {}, closedUnder: 0 };
   const cookies = async () => [{ name: 'aws-waf-token', expires: 0 }];
 
   const newPage = async () => {
@@ -26,8 +30,12 @@ function fakeSession(respond = (url) => ({ status: 200, text: `page ${url}` })) 
       async evaluate(fn, url) {
         // Sans URL : contrôle du jeton pendant l'authentification.
         if (url === undefined) return true;
-        await sleep(30);
-        if (page.closed) throw new Error('Target closed');
+        stats.calls[url] = (stats.calls[url] ?? 0) + 1;
+        await sleep(delay(url));
+        if (page.closed) {
+          stats.closedUnder++;
+          throw new Error('Protocol error (Runtime.callFunctionOn): Target closed');
+        }
         return respond(url);
       },
       async close() {
@@ -93,6 +101,85 @@ test('un 403 parmi trois requêtes en vol : une seule réauthentification', asyn
   assert.deepEqual(pages.map((p) => p.html), ['page /a', 'page /b', 'page /c']);
   assert.equal(stats.pages, 2);
   assert.equal(stats.launches, 1);
+});
+
+test('deux requêtes en vol survivent au 403 d’une troisième', async () => {
+  let failures = 0;
+  const { session, stats } = fakeSession(
+    (url) => {
+      if (url === '/b' && failures++ === 0) return { status: 403, text: '' };
+      return { status: 200, text: `page ${url}` };
+    },
+    // Le refus arrive pendant que /a et /c attendent encore leur réponse.
+    { delay: (url) => (url === '/b' ? 10 : 80) }
+  );
+  const { generation } = await session.fetchPage('/warm');
+
+  const [a, b, c] = await fetchAll(session, ['/a', '/b', '/c']);
+  assert.equal(stats.closedUnder, 0);
+  assert.deepEqual([a.html, b.html, c.html], ['page /a', 'page /b', 'page /c']);
+  // /a et /c sont servies du premier coup par l'ancien onglet, /b par le nouveau.
+  assert.equal(stats.calls['/a'], 1);
+  assert.equal(stats.calls['/c'], 1);
+  assert.equal(stats.calls['/b'], 2);
+  assert.deepEqual([a.generation, b.generation, c.generation], [generation, generation + 1, generation]);
+  assert.equal(stats.pages, 2);
+});
+
+test('une requête arrivée pendant la relève attend le nouvel onglet', async () => {
+  let failures = 0;
+  const { session, stats } = fakeSession(
+    (url) => {
+      if (url === '/b' && failures++ === 0) return { status: 403, text: '' };
+      return { status: 200, text: `page ${url}` };
+    },
+    { delay: (url) => (url === '/a' ? 100 : 10) }
+  );
+  const { generation } = await session.fetchPage('/warm');
+
+  const pending = fetchAll(session, ['/a', '/b']);
+  // /b a été refusée, /a est encore en vol sur l'ancien onglet.
+  await sleep(40);
+  const d = await session.fetchPage('/d');
+  const [a, b] = await pending;
+  assert.equal(stats.closedUnder, 0);
+  assert.equal(stats.calls['/d'], 1);
+  assert.equal(a.generation, generation);
+  assert.equal(b.generation, generation + 1);
+  assert.equal(d.generation, generation + 1);
+  assert.equal(stats.pages, 2);
+});
+
+test('un jeton expiré attend la fin des requêtes en vol avant de fermer l’onglet', async () => {
+  const delays = { '/a': 40, '/e': 120 };
+  const { session, stats } = fakeSession(undefined, { delay: (url) => delays[url] ?? 10 });
+  const { generation } = await session.fetchPage('/warm');
+
+  const inFlight = fetchAll(session, ['/a', '/e']);
+  await sleep(5);
+  session.tokenAt = Date.now() - 6 * 60 * 1000;
+  const b = session.fetchPage('/b');
+  // La réponse de /a a rafraîchi le jeton, /e est encore en vol : /c doit attendre le nouvel onglet.
+  await sleep(55);
+  const c = session.fetchPage('/c');
+  const [[a, e], pb, pc] = await Promise.all([inFlight, b, c]);
+  assert.equal(stats.closedUnder, 0);
+  assert.deepEqual(
+    [a.generation, e.generation, pb.generation, pc.generation],
+    [generation, generation, generation + 1, generation + 1]
+  );
+  assert.equal(stats.calls['/c'], 1);
+  assert.equal(stats.pages, 2);
+});
+
+test('un refus est journalisé avec son statut, sans le chemin', async (t) => {
+  const warnings = [];
+  t.mock.method(console, 'warn', (...args) => warnings.push(args.join(' ')));
+  const { session } = fakeSession(failingOnce(429));
+  await session.fetchPage('/search?query=secret');
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /429/);
+  assert.doesNotMatch(warnings[0], /secret/);
 });
 
 test('un challenge servi en 202 relance la session', async () => {
