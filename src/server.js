@@ -7,6 +7,8 @@ import { TtlCache, Limiter, cached, prefetch } from './cache.js';
 import {
   normalizeFindParams,
   needsServerFilter,
+  needsProfile,
+  profileMatches,
   searchSource,
   categorySource,
   companyReviewParams,
@@ -22,6 +24,8 @@ import {
   REVIEW_STARS,
   REVIEW_LANGUAGES,
   SORTS,
+  CLAIMED,
+  REPLIES,
   COUNTRIES,
   CATEGORIES,
 } from './trustpilot.js';
@@ -169,6 +173,8 @@ app.get('/api/options', (req, res) => {
     reviewStars: REVIEW_STARS,
     reviewLanguages: REVIEW_LANGUAGES,
     sorts: SORTS,
+    claimed: CLAIMED,
+    replies: REPLIES,
     countries: COUNTRIES,
     categories: CATEGORIES,
     maxPage: 1000,
@@ -281,12 +287,21 @@ async function findList(p) {
 }
 
 /**
- * Collecte filtrée par le serveur : fouille des avis (`scan`) ou filtre
- * d'appoint sur un secteur (`list`). Pagination propre, sur ce qui a été trouvé.
+ * Collecte filtrée par le serveur : fouille des avis (`scan`), filtre
+ * d'appoint sur un secteur ou filtre de profil (`list`). Pagination propre,
+ * sur ce qui a été trouvé.
  */
 async function findCollected(p, owner, signal) {
   const scan = p.kind === 'scan';
+  const profile = needsProfile(p);
   const perPage = scan ? CONFIG.reviewPerPage : 20;
+  // Fiche lue pour chaque entreprise : avis filtrés pour une fouille, sinon les
+  // plus récents. Même page que la fiche ouverte ensuite : elle sortira du cache.
+  const readCompany = async (business) => {
+    const params = scan ? scanReviewParams(p) : companyReviewParams({ ...p, page: 1 });
+    const path = buildCompanyPath(business.domain, params);
+    return (await load(reviewCache, path, parseCompanyPage, BACKGROUND)).payload;
+  };
   const job = {
     loadPage: (page) => loadSource(p, page),
     keep: (() => {
@@ -295,17 +310,18 @@ async function findCollected(p, owner, signal) {
     })(),
     enrich: scan
       ? async (business) => {
-          // Même page que la fiche de l'entreprise : l'ouvrir ensuite sort du cache.
-          const path = buildCompanyPath(business.domain, scanReviewParams(p));
-          const loaded = await load(reviewCache, path, parseCompanyPage, BACKGROUND);
-          const { total, matches } = reviewMatches(loaded.payload);
+          const page = await readCompany(business);
+          if (profile && !profileMatches(p, page)) return null;
+          const { total, matches } = reviewMatches(page);
           return total ? { ...business, matchCount: total, snippets: matches } : null;
         }
-      : null,
+      : profile
+        ? async (business) => (profileMatches(p, await readCompany(business)) ? business : null)
+        : null,
   };
   const key = JSON.stringify([
     p.kind, p.q, p.category, p.country, p.city, p.trustscore, p.numberOfReviews,
-    p.category ? p.sort : '', p.term, p.rating, p.language,
+    p.category ? p.sort : '', p.term, p.phrase, p.rating, p.language, p.claimed, p.replies,
   ]);
   const fresh = !collector.peek(key);
   const page = Math.min(p.page, MAX_SCAN_PAGE);
@@ -363,7 +379,7 @@ app.get('/api/find', async (req, res) => {
   try {
     let body;
     if (params.kind === 'company') body = await findCompany(params);
-    else if (params.kind === 'scan' || needsServerFilter(params)) {
+    else if (params.kind === 'scan' || needsServerFilter(params) || needsProfile(params)) {
       body = await findCollected(params, clientKey(req), gone.signal);
     }
     else body = await findList(params);

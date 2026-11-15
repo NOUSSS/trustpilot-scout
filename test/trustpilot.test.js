@@ -4,6 +4,9 @@ import {
   domainFrom,
   normalizeFindParams,
   needsServerFilter,
+  needsProfile,
+  profileMatches,
+  reviewSearch,
   searchSource,
   companyReviewParams,
   scanReviewParams,
@@ -61,6 +64,8 @@ test('normalizeFindParams déduit le type de résultat', () => {
   assert.equal(find('q=fnac&rating=1').kind, 'scan');
   assert.equal(find('q=fnac&lang=fr').kind, 'scan');
   assert.equal(find('term=frais').kind, 'scan');
+  assert.equal(find('phrase=service client').kind, 'scan');
+  assert.equal(find('q=fnac&claimed=no&replies=yes').kind, 'list');
   const company = find('q=https://www.fnac.com/x&category=bank&term=frais');
   assert.equal(company.kind, 'company');
   assert.equal(company.domain, 'www.fnac.com');
@@ -69,11 +74,52 @@ test('normalizeFindParams déduit le type de résultat', () => {
 test('normalizeFindParams applique les valeurs par défaut', () => {
   assert.deepEqual(find('q=fnac'), {
     kind: 'list', q: 'fnac', domain: null, category: '', country: '', city: '',
-    trustscore: '', numberOfReviews: '', term: '', rating: '', language: 'all',
-    sort: 'relevance', page: 1,
+    trustscore: '', numberOfReviews: '', term: '', phrase: '', rating: '', language: 'all',
+    sort: 'relevance', claimed: '', replies: '', page: 1,
   });
   assert.equal(find('q=x&country=fr').country, 'FR');
   assert.equal(find('q=  deux   mots ').q, 'deux mots');
+});
+
+test('normalizeFindParams : phrase sans guillemets, profil validé', () => {
+  assert.equal(find('phrase= "service  client" ').phrase, 'service client');
+  assert.equal(find('phrase=«service client»').phrase, 'service client');
+  assert.throws(() => find('phrase="a"'), /au moins 2 caractères/);
+  assert.equal(find('q=x&claimed=yes&replies=no').claimed, 'yes');
+  assert.throws(() => find('q=x&claimed=true'), /Profil revendiqué invalide/);
+  assert.throws(() => find('q=x&replies=1'), /Réponses aux avis invalide/);
+});
+
+test('reviewSearch : mots tels quels, phrase entre guillemets', () => {
+  assert.equal(reviewSearch(find('q=x&term=frais port')), 'frais port');
+  assert.equal(reviewSearch(find('q=x&phrase=service client')), '"service client"');
+  assert.equal(reviewSearch(find('q=x&term=frais&phrase=service client')), 'frais "service client"');
+  assert.equal(reviewSearch(find('q=x')), '');
+});
+
+test('needsProfile : seuls « non revendiqué » et les réponses exigent la fiche', () => {
+  assert.equal(needsProfile(find('q=x')), false);
+  assert.equal(needsProfile(find('q=x&claimed=yes')), false);
+  assert.equal(needsProfile(find('q=x&claimed=no')), true);
+  assert.equal(needsProfile(find('q=x&replies=no')), true);
+  assert.equal(needsProfile(find('q=fnac.com&replies=yes')), false);
+});
+
+test('profileMatches', () => {
+  const fiche = (claimed, replyRate, replied = false) => ({
+    business: { claimed, replyRate },
+    reviews: [{ replied }],
+  });
+  assert.equal(profileMatches(find('q=x&claimed=no'), fiche(false, 0)), true);
+  assert.equal(profileMatches(find('q=x&claimed=no'), fiche(true, 0)), false);
+  assert.equal(profileMatches(find('q=x&claimed=yes'), fiche(true, 0)), true);
+  assert.equal(profileMatches(find('q=x&replies=yes'), fiche(true, 12)), true);
+  // Taux nul mais une réponse sur la page : l'entreprise répond.
+  assert.equal(profileMatches(find('q=x&replies=yes'), fiche(true, 0, true)), true);
+  assert.equal(profileMatches(find('q=x&replies=yes'), fiche(true, 0)), false);
+  assert.equal(profileMatches(find('q=x&replies=no'), fiche(false, 0)), true);
+  assert.equal(profileMatches(find('q=x&replies=no'), fiche(true, 40)), false);
+  assert.equal(profileMatches(find('q=x&claimed=no&replies=no'), fiche(true, 0)), false);
 });
 
 test('normalizeFindParams borne la page', () => {
@@ -107,16 +153,20 @@ test('needsServerFilter : nom ou nombre d’avis sur un secteur', () => {
 
 test('searchSource : la ville prime sur le pays, le texte d’avis sert de mot-clé', () => {
   assert.deepEqual(searchSource(find('q=bnp&country=FR&stars=4.0&reviews=50')), {
-    query: 'bnp', trustscore: '4.0', numberOfReviews: '50', location: 'France', page: 1,
+    query: 'bnp', trustscore: '4.0', numberOfReviews: '50', location: 'France', claimed: false, page: 1,
   });
   assert.equal(searchSource(find('q=bnp&country=FR&city=Lyon')).location, 'Lyon');
   assert.equal(searchSource(find('term=frais')).query, 'frais');
+  assert.equal(searchSource(find('phrase=service client')).query, 'service client');
+  assert.equal(searchSource(find('q=bnp&claimed=yes')).claimed, true);
+  assert.equal(searchSource(find('q=bnp&claimed=no')).claimed, false);
 });
 
 test('companyReviewParams : la pertinence n’existe qu’avec un texte', () => {
   assert.equal(companyReviewParams(find('q=fnac.com&term=frais')).sort, 'relevance');
   assert.equal(companyReviewParams(find('q=fnac.com&term=frais&sort=recent')).sort, 'recency');
   assert.equal(companyReviewParams(find('q=fnac.com')).sort, 'recency');
+  assert.equal(companyReviewParams(find('q=fnac.com&phrase=service client')).sort, 'relevance');
 });
 
 test('buildPath', () => {
@@ -131,6 +181,10 @@ test('buildPath', () => {
     ),
     '/search?query=x&trustscore=4.0&numberOfReviews=50&location=France&page=2'
   );
+  assert.equal(
+    buildPath({ query: 'x', claimed: true, page: 1 }, { semantic: false }),
+    '/search?query=x&claimed=true'
+  );
 });
 
 test('buildCategoryPath', () => {
@@ -140,11 +194,15 @@ test('buildCategoryPath', () => {
   );
   assert.equal(buildCategoryPath({ category: 'bank', sort: 'relevance', page: 1 }), '/categories/bank?');
   assert.equal(buildCategoryPath({ category: 'bank', sort: 'recent', page: 1 }), '/categories/bank?sort=latest_review');
+  assert.equal(
+    buildCategoryPath({ category: 'bank', country: 'FR', claimed: true, sort: 'relevance', page: 1 }),
+    '/categories/bank?country=FR&claimed=true'
+  );
 });
 
 test('buildCompanyPath', () => {
   assert.equal(
-    buildCompanyPath('fnac.com', { language: 'all', term: 'frais de port', rating: '1', sort: 'relevance', page: 1 }),
+    buildCompanyPath('fnac.com', { language: 'all', search: 'frais de port', rating: '1', sort: 'relevance', page: 1 }),
     '/review/fnac.com?languages=all&search=frais+de+port&stars=1&sort=relevance'
   );
   assert.equal(buildCompanyPath('fnac.com', { page: 3 }), '/review/fnac.com?languages=all&sort=recency&page=3');
@@ -184,6 +242,7 @@ test('parseSearchPage réduit les entreprises aux champs utiles', () => {
       city: 'Paris',
       categories: ['Électronique', 'Librairie'],
       claimed: true,
+      replyRate: null,
     },
   ]);
   assert.deepEqual(parsed.pagination, {
@@ -229,7 +288,11 @@ test('parseCategoryPage', () => {
 test('parseCompanyPage', () => {
   const parsed = parseCompanyPage(
     page({
-      businessUnit: unit({ location: undefined, countryCode: 'FR' }),
+      businessUnit: unit({
+        location: undefined,
+        countryCode: 'FR',
+        activity: { replyBehavior: { replyPercentage: 37 } },
+      }),
       filters: { pagination: { totalCount: 500, perPage: 20, totalPages: 25, currentPage: 2 } },
       reviews: [
         {
@@ -248,6 +311,7 @@ test('parseCompanyPage', () => {
   );
   assert.equal(parsed.business.country, 'FR');
   assert.equal(parsed.business.city, '');
+  assert.equal(parsed.business.replyRate, 37);
   // Au-delà de la 10e page d'avis, Trustpilot exige une connexion.
   assert.equal(parsed.pagination.totalPages, 10);
   assert.equal(parsed.pagination.totalResults, 500);
@@ -282,7 +346,9 @@ test('parseCompanyPage : connexion exigée ou fiche absente', () => {
 });
 
 test('la fouille et la fiche d’une entreprise lisent la même page d’avis', () => {
-  for (const query of ['q=fnac.com&term=frais&rating=1&lang=fr', 'q=fnac.com&rating=1', 'q=fnac.com&lang=fr']) {
+  for (const query of [
+    'q=fnac.com&term=frais&rating=1&lang=fr', 'q=fnac.com&phrase=service client', 'q=fnac.com&rating=1', 'q=fnac.com&lang=fr',
+  ]) {
     const p = find(query);
     assert.equal(
       buildCompanyPath('fnac.com', scanReviewParams(p)),
@@ -293,5 +359,10 @@ test('la fouille et la fiche d’une entreprise lisent la même page d’avis', 
   assert.equal(
     buildCompanyPath('fnac.com', scanReviewParams(find('q=x&term=frais&rating=1&lang=fr'))),
     '/review/fnac.com?languages=fr&search=frais&stars=1&sort=relevance'
+  );
+  // Filtre de profil sur une liste : la fiche lue est celle qu'ouvre la carte.
+  assert.equal(
+    buildCompanyPath('fnac.com', companyReviewParams({ ...find('q=x&claimed=no&replies=yes'), page: 1 })),
+    buildCompanyPath('fnac.com', companyReviewParams(find('q=fnac.com')))
   );
 });

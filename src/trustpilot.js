@@ -26,6 +26,19 @@ export const REVIEW_STARS = [
   { value: '1', label: '1 étoile' },
 ];
 
+/** Profil revendiqué par l'entreprise, et réponses de l'entreprise aux avis. */
+export const CLAIMED = [
+  { value: '', label: 'Peu importe' },
+  { value: 'yes', label: 'Oui' },
+  { value: 'no', label: 'Non' },
+];
+
+export const REPLIES = [
+  { value: '', label: 'Peu importe' },
+  { value: 'yes', label: 'Oui' },
+  { value: 'no', label: 'Non' },
+];
+
 export const REVIEW_LANGUAGES = ['all', 'fr', 'en', 'de', 'es', 'it', 'nl', 'pt', 'da', 'sv', 'pl'];
 
 /**
@@ -57,6 +70,8 @@ const TRUST_SET = new Set(TRUST_SCORES.map((o) => o.value).filter(Boolean));
 const REVIEW_SET = new Set(REVIEW_COUNTS.map((o) => o.value).filter(Boolean));
 const REVIEW_STAR_SET = new Set(REVIEW_STARS.map((o) => o.value).filter(Boolean));
 const REVIEW_LANG_SET = new Set(REVIEW_LANGUAGES);
+const CLAIMED_SET = new Set(CLAIMED.map((o) => o.value).filter(Boolean));
+const REPLIES_SET = new Set(REPLIES.map((o) => o.value).filter(Boolean));
 const SORT_SET = new Set(SORTS.map((o) => o.value));
 const COUNTRY_SET = new Set(COUNTRIES);
 const CATEGORY_SET = new Set(CATEGORIES.flatMap((c) => [c.id, ...c.sub.map((s) => s.id)]));
@@ -122,6 +137,7 @@ export function buildPath(params, { semantic = true } = {}) {
   if (params.trustscore) qs.set('trustscore', params.trustscore);
   if (params.numberOfReviews) qs.set('numberOfReviews', params.numberOfReviews);
   if (params.location) qs.set('location', params.location);
+  if (params.claimed) qs.set('claimed', 'true');
   if (semantic) {
     qs.set('variant', 'true');
     qs.set('experiment', 'semantic_search_enabled');
@@ -135,6 +151,7 @@ export function buildCategoryPath(params) {
   if (params.country) qs.set('country', params.country);
   if (params.location) qs.set('location', params.location);
   if (params.trustscore) qs.set('trustscore', params.trustscore);
+  if (params.claimed) qs.set('claimed', 'true');
   const sort = CATEGORY_SORT[params.sort];
   if (sort && sort !== 'most_relevant') qs.set('sort', sort);
   if (params.page > 1) qs.set('page', String(params.page));
@@ -147,7 +164,7 @@ const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
  * Normalise et valide les paramètres de la recherche unifiée, et en déduit le
  * type de résultat :
  * - `company` : un domaine ou une URL, ses avis filtrés ;
- * - `scan` : un filtre d'avis (texte, note de l'avis, langue), les entreprises
+ * - `scan` : un filtre d'avis (mots, phrase, note de l'avis, langue), les entreprises
  *   de la source dont au moins un avis correspond ;
  * - `list` : les entreprises de la source.
  * La source est le secteur s'il est choisi, sinon la recherche (ou, à défaut,
@@ -176,7 +193,12 @@ export function normalizeFindParams(searchParams) {
 
   const term = clean(searchParams.get('term'), 80);
   if (term && term.length < 2) {
-    throw new ValidationError('Le texte cherché dans les avis doit faire au moins 2 caractères');
+    throw new ValidationError('Les mots cherchés dans les avis doivent faire au moins 2 caractères');
+  }
+  // Une seule phrase, mise entre guillemets pour Trustpilot : les siens sont retirés.
+  const phrase = clean(clean(searchParams.get('phrase'), 80).replace(/["“”«»]/g, ' '), 80);
+  if (phrase && phrase.length < 2) {
+    throw new ValidationError('La phrase cherchée dans les avis doit faire au moins 2 caractères');
   }
   const rating = clean(searchParams.get('rating'), 1);
   if (rating && !REVIEW_STAR_SET.has(rating)) throw new ValidationError(`Note d'avis invalide : ${rating}`);
@@ -184,21 +206,45 @@ export function normalizeFindParams(searchParams) {
   if (!REVIEW_LANG_SET.has(language)) throw new ValidationError(`Langue invalide : ${language}`);
   const sort = clean(searchParams.get('sort'), 12) || 'relevance';
   if (!SORT_SET.has(sort)) throw new ValidationError(`Tri invalide : ${sort}`);
+  const claimed = clean(searchParams.get('claimed'), 3);
+  if (claimed && !CLAIMED_SET.has(claimed)) throw new ValidationError(`Profil revendiqué invalide : ${claimed}`);
+  const replies = clean(searchParams.get('replies'), 3);
+  if (replies && !REPLIES_SET.has(replies)) throw new ValidationError(`Réponses aux avis invalide : ${replies}`);
 
-  const kind = domain ? 'company' : term || rating || language !== 'all' ? 'scan' : 'list';
-  if (kind !== 'company' && !q && !category && !term) {
+  const kind = domain ? 'company' : term || phrase || rating || language !== 'all' ? 'scan' : 'list';
+  if (kind !== 'company' && !q && !category && !term && !phrase) {
     throw new ValidationError('Indique une entreprise, un secteur ou un texte à chercher dans les avis');
   }
   const maxPage = kind === 'company' ? MAX_REVIEW_PAGE : MAX_PAGE;
 
   return {
     kind, q, domain, category, country, city, trustscore, numberOfReviews,
-    term, rating, language, sort, page: readPage(searchParams, maxPage),
+    term, phrase, rating, language, sort, claimed, replies, page: readPage(searchParams, maxPage),
   };
 }
 
 /** Filtres que Trustpilot ne sait pas appliquer à un secteur : le serveur s'en charge. */
 export const needsServerFilter = (p) => Boolean(p.category && (p.q || p.numberOfReviews));
+
+/**
+ * Filtres de profil que seule la fiche de chaque entreprise renseigne. Trustpilot
+ * sait garder les profils revendiqués, pas les autres ni les réponses aux avis.
+ */
+export const needsProfile = (p) => p.kind !== 'company' && (p.claimed === 'no' || Boolean(p.replies));
+
+/** L'entreprise d'une fiche lue (`parseCompanyPage`) passe-t-elle les filtres de profil ? */
+export function profileMatches(p, page) {
+  const { business } = page;
+  if (p.claimed && (p.claimed === 'yes') !== business.claimed) return false;
+  if (p.replies) {
+    const replies = business.replyRate > 0 || page.reviews.some((r) => r.replied);
+    if ((p.replies === 'yes') !== replies) return false;
+  }
+  return true;
+}
+
+/** Texte cherché dans les avis : n'importe lequel des mots, ou la phrase exacte. */
+export const reviewSearch = (p) => [p.term, p.phrase && `"${p.phrase}"`].filter(Boolean).join(' ');
 
 /** Paramètres de la recherche Trustpilot qui sert de source. */
 export function searchSource(p) {
@@ -211,10 +257,11 @@ export function searchSource(p) {
     }
   }
   return {
-    query: (p.q || p.term).slice(0, 120),
+    query: (p.q || p.term || p.phrase).slice(0, 120),
     trustscore: p.trustscore,
     numberOfReviews: p.numberOfReviews,
     location,
+    claimed: p.claimed === 'yes',
     page: 1,
   };
 }
@@ -225,17 +272,18 @@ export const categorySource = (p) => ({
   country: p.country,
   location: p.city,
   trustscore: p.trustscore,
+  claimed: p.claimed === 'yes',
   sort: p.sort,
   page: 1,
 });
 
 /** Paramètres de la page d'avis d'une entreprise. */
 export const companyReviewParams = (p) => ({
-  term: p.term,
+  search: reviewSearch(p),
   rating: p.rating,
   language: p.language,
   // Sans texte cherché, la pertinence n'a pas de sens : Trustpilot trie alors par date.
-  sort: p.term && p.sort === 'relevance' ? 'relevance' : 'recency',
+  sort: reviewSearch(p) && p.sort === 'relevance' ? 'relevance' : 'recency',
   page: p.page,
 });
 
@@ -244,17 +292,17 @@ export const companyReviewParams = (p) => ({
  * comme l'ouvrira la fiche de l'entreprise (même URL, donc même entrée de cache).
  */
 export const scanReviewParams = (p) => ({
-  term: p.term,
+  search: reviewSearch(p),
   rating: p.rating,
   language: p.language,
-  sort: p.term ? 'relevance' : 'recency',
+  sort: reviewSearch(p) ? 'relevance' : 'recency',
   page: 1,
 });
 
 export function buildCompanyPath(domain, params) {
   const qs = new URLSearchParams();
   qs.set('languages', params.language || 'all');
-  if (params.term) qs.set('search', params.term);
+  if (params.search) qs.set('search', params.search);
   if (params.rating) qs.set('stars', params.rating);
   qs.set('sort', params.sort || 'recency');
   if (params.page > 1) qs.set('page', String(params.page));
@@ -297,6 +345,8 @@ function mapUnit(unit) {
     city: unit.location?.city ?? '',
     categories: categories.slice(0, 2),
     claimed: Boolean(unit.isClaimed || unit.claimed),
+    // Part des avis négatifs auxquels l'entreprise a répondu (fiche entreprise seulement).
+    replyRate: unit.activity?.replyBehavior ? Number(unit.activity.replyBehavior.replyPercentage ?? 0) : null,
   };
 }
 

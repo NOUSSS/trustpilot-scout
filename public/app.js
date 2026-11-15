@@ -18,6 +18,9 @@ const els = {
   advanced: $('#advanced'),
   advancedCount: $('#advanced-count'),
   term: $('#term'),
+  phrase: $('#phrase'),
+  claimed: $('#claimed'),
+  replies: $('#replies'),
   country: $('#country'),
   city: $('#city'),
   stars: $('#stars'),
@@ -37,13 +40,15 @@ const els = {
 };
 
 /** Paramètres d'API, chacun lié au champ du même nom. Tous se combinent. */
-const FIELDS = ['q', 'category', 'term', 'country', 'city', 'stars', 'reviews', 'rating', 'lang', 'sort'];
+const FIELDS = [
+  'q', 'category', 'term', 'phrase', 'country', 'city', 'stars', 'reviews', 'claimed', 'replies', 'rating', 'lang', 'sort',
+];
 /** Champs repliés sous « Options avancées ». */
-const ADVANCED = ['country', 'city', 'stars', 'reviews', 'rating', 'lang', 'sort'];
+const ADVANCED = ['country', 'city', 'stars', 'reviews', 'claimed', 'replies', 'rating', 'lang', 'sort'];
 /** Valeurs par défaut, omises de l'URL. */
 const DEFAULTS = { lang: 'all', sort: 'relevance' };
 /** Listes UI SDK : leur valeur vaut `null` tant que rien n'est choisi. */
-const LISTS = ['category', 'country', 'stars', 'reviews', 'rating', 'lang', 'sort'];
+const LISTS = ['category', 'country', 'stars', 'reviews', 'claimed', 'replies', 'rating', 'lang', 'sort'];
 
 const valueOf = (name) => String(els[name].value ?? '').trim();
 
@@ -145,6 +150,8 @@ async function loadOptions() {
     fill(els.reviews, data.reviews, 'reviews');
     fill(els.rating, data.reviewStars, 'rating');
     fill(els.sort, data.sorts, 'sort');
+    fill(els.claimed, data.claimed);
+    fill(els.replies, data.replies);
 
     for (const top of data.categories) {
       categoryNames.set(top.id, top.name);
@@ -189,16 +196,21 @@ function looksLikeDomain(input) {
 function kindOf(p) {
   if (looksLikeDomain(p.q)) return 'company';
   // Comme le serveur : sans entreprise, secteur ni texte, il n'y a rien à fouiller.
-  if (!p.q && !p.category && !p.term) return null;
-  if (p.term || p.rating || (p.lang && p.lang !== 'all')) return 'scan';
+  if (!p.q && !p.category && !p.term && !p.phrase) return null;
+  if (p.term || p.phrase || p.rating || (p.lang && p.lang !== 'all')) return 'scan';
   return 'list';
 }
+
+/** Comme le serveur (`needsProfile`) : la fiche de chaque entreprise est lue une à une. */
+const needsProfile = (p) => p.claimed === 'no' || Boolean(p.replies);
 
 /** Grise les champs sans effet sur la combinaison en cours, plutôt que de les cacher. */
 function updateFields(p) {
   const kind = kindOf(p);
   const company = kind === 'company';
-  for (const el of [els.category, els.country, els.city, els.stars, els.reviews]) el.disabled = company;
+  for (const el of [els.category, els.country, els.city, els.stars, els.reviews, els.claimed, els.replies]) {
+    el.disabled = company;
+  }
   if (company) els.category.open = false;
   // Trustpilot ne trie que les secteurs et les avis d'une entreprise.
   els.sort.disabled = !company && !p.category;
@@ -214,30 +226,36 @@ function describe(p) {
   if (!kind) return 'Renseigne une entreprise, un secteur ou un texte à chercher dans les avis, puis combine les filtres.';
 
   const reviewParts = [];
-  if (p.term) reviewParts.push(`contenant ${quoted(p.term)}`);
+  const texts = [];
+  if (p.term) texts.push(/\s/.test(p.term) ? `l’un des mots ${quoted(p.term)}` : quoted(p.term));
+  if (p.phrase) texts.push(`la phrase ${quoted(p.phrase)}`);
+  if (texts.length) reviewParts.push(`contenant ${texts.join(' ou ')}`);
   if (p.rating) reviewParts.push(`notés ${labels.rating.get(p.rating)?.toLowerCase() ?? p.rating}`);
   if (p.lang && p.lang !== 'all') reviewParts.push(`en ${languageName(p.lang).toLowerCase()}`);
   const sortLabel = labels.sort.get(p.sort)?.toLowerCase();
 
   if (kind === 'company') {
-    const sorted = p.term && p.sort === 'relevance' ? 'par pertinence' : 'du plus récent au plus ancien';
+    const sorted = (p.term || p.phrase) && p.sort === 'relevance' ? 'par pertinence' : 'du plus récent au plus ancien';
     return [`Avis de ${p.q.trim()}`, ...reviewParts].join(', ') + `, ${sorted}.`;
   }
 
   const parts = ['Entreprises'];
   if (p.category) parts.push(`du secteur ${categoryNames.get(p.category) ?? p.category}`);
   if (p.q) parts.push(p.category ? `dont le nom contient ${quoted(p.q)}` : `trouvées pour ${quoted(p.q)}`);
-  else if (!p.category) parts.push(`trouvées pour ${quoted(p.term)}`);
+  else if (!p.category) parts.push(`trouvées pour ${quoted(p.term || p.phrase)}`);
   const place = [p.city, countryName(p.country)].filter(Boolean).join(', ');
   let sentence = parts.join(' ') + (place ? ` (${place})` : '');
   const extra = [];
   if (p.stars) extra.push(`notées ${labels.stars.get(p.stars)?.toLowerCase() ?? p.stars}`);
   if (p.reviews) extra.push(labels.reviews.get(p.reviews) ?? `${p.reviews} avis et +`);
+  if (p.claimed) extra.push(p.claimed === 'yes' ? 'au profil revendiqué' : 'au profil non revendiqué');
+  if (p.replies) extra.push(p.replies === 'yes' ? 'qui répondent aux avis' : 'qui ne répondent pas aux avis');
   if (extra.length) sentence += `, ${extra.join(', ')}`;
   if (kind === 'scan') sentence += `, qui ont des avis ${reviewParts.join(', ')}`;
   if (p.category && sortLabel) sentence += `, triées par ${sortLabel}`;
   sentence += '.';
   if (kind === 'scan') sentence += ' Les avis de chaque entreprise sont interrogés un à un : compte quelques secondes.';
+  else if (needsProfile(p)) sentence += ' La fiche de chaque entreprise est lue une à une : compte quelques secondes.';
   return sentence;
 }
 
@@ -590,7 +608,7 @@ function renderCompany(data) {
 
   const company = companyCard(data.business);
   if (!data.items.length) {
-    const filtered = data.params.term || data.params.rating || data.params.language !== 'all';
+    const filtered = data.params.term || data.params.phrase || data.params.rating || data.params.language !== 'all';
     els.results.replaceChildren(
       company,
       stateBox(
@@ -749,7 +767,7 @@ async function go(page = 1, depth = 0, waits = 0) {
   state.controller = controller;
 
   els.submit.disabled = true;
-  els.submitLabel.textContent = kind === 'scan' ? 'Fouille…' : 'Recherche…';
+  els.submitLabel.textContent = kind === 'scan' || needsProfile(params) ? 'Fouille…' : 'Recherche…';
   // L'en-tête reste en place pendant le chargement : la grille ne bouge pas à l'arrivée.
   els.head.hidden = false;
   els.count.textContent = '…';
@@ -844,7 +862,7 @@ function exportCsv() {
   const p = data.params;
   const subject =
     data.kind === 'company' ? data.business?.domain ?? p.q
-    : [p.q, p.category, p.term, p.country].filter(Boolean).join('-');
+    : [p.q, p.category, p.term || p.phrase, p.country].filter(Boolean).join('-');
   const suffix = { company: '-avis', scan: '-fouille', list: '' }[data.kind];
   const slug = String(subject).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\W+/g, '-').slice(0, 40);
   a.download = `trustpilot-${slug}${suffix}-p${state.page}.csv`;

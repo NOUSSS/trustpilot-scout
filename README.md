@@ -9,16 +9,22 @@ Un seul formulaire, dont tous les champs se combinent :
 
 - **Entreprise** — nom, mot-clé, domaine ou URL ;
 - **Secteur** — une catégorie Trustpilot (noms français) ;
-- **Dans les avis** — mot ou phrase cherché dans le texte des avis ;
-- filtres : pays, ville, note de l’entreprise, nombre d’avis, note de l’avis,
-  langue des avis, tri.
+- **Mots-clés dans les avis** — l’un ou l’autre des mots, dans le texte des avis ;
+- **Phrase exacte dans les avis** — ces mots, dans cet ordre ;
+- filtres : pays, ville, note de l’entreprise, nombre d’avis, profil
+  revendiqué, réponses aux avis, note de l’avis, langue des avis, tri.
+
+« Profil revendiqué : non » et « Répond aux avis » lisent la fiche de chaque
+entreprise, comme une fouille des avis : compter quelques secondes. Une
+entreprise répond aux avis si Trustpilot lui compte des réponses aux avis
+négatifs, ou si un avis lu porte sa réponse.
 
 Le type de résultat se déduit de la combinaison :
 
 | Saisie | Résultat |
 | --- | --- |
 | un domaine ou une URL | les avis de cette entreprise, filtrés (texte, note, langue, tri) |
-| un filtre d’avis (texte, note de l’avis, langue) | les entreprises de la source dont au moins un avis correspond, avec extraits |
+| un filtre d’avis (mots, phrase, note de l’avis, langue) | les entreprises de la source dont au moins un avis correspond, avec extraits |
 | sinon | la liste des entreprises de la source |
 
 La source est le secteur s’il est choisi (le nom saisi filtre alors ce

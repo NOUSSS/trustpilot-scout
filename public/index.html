@@ -48,8 +48,12 @@
             </ui-combobox>
           </ui-field>
           <ui-field class="field grow">
-            <ui-field-label class="label">Dans les avis</ui-field-label>
-            <ui-input><input id="term" name="term" type="search" placeholder="mot ou phrase" maxlength="80" /></ui-input>
+            <ui-field-label class="label">Mots-clés dans les avis</ui-field-label>
+            <ui-input><input id="term" name="term" type="search" placeholder="l’un ou l’autre des mots" maxlength="80" /></ui-input>
+          </ui-field>
+          <ui-field class="field grow">
+            <ui-field-label class="label">Phrase exacte dans les avis</ui-field-label>
+            <ui-input><input id="phrase" name="phrase" type="search" placeholder="ex. service client" maxlength="80" /></ui-input>
           </ui-field>
         </div>
 
@@ -84,6 +88,24 @@
             <ui-field class="field">
               <ui-field-label class="label">Nombre d’avis</ui-field-label>
               <ui-select id="reviews" name="reviews">
+                <ui-select-trigger><button type="button"><ui-select-value></ui-select-value></button></ui-select-trigger>
+                <ui-select-content hidden>
+                  <ui-select-list></ui-select-list>
+                </ui-select-content>
+              </ui-select>
+            </ui-field>
+            <ui-field class="field">
+              <ui-field-label class="label">Profil revendiqué</ui-field-label>
+              <ui-select id="claimed" name="claimed">
+                <ui-select-trigger><button type="button"><ui-select-value></ui-select-value></button></ui-select-trigger>
+                <ui-select-content hidden>
+                  <ui-select-list></ui-select-list>
+                </ui-select-content>
+              </ui-select>
+            </ui-field>
+            <ui-field class="field">
+              <ui-field-label class="label">Répond aux avis</ui-field-label>
+              <ui-select id="replies" name="replies">
                 <ui-select-trigger><button type="button"><ui-select-value></ui-select-value></button></ui-select-trigger>
                 <ui-select-content hidden>
                   <ui-select-list></ui-select-list>
