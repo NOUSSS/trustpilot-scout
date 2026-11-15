@@ -579,12 +579,37 @@ function scanMeta(p) {
     (p.partial ? ' · parcours interrompu' : '');
 }
 
+/** Méta pendant les relances automatiques d'une collecte encore vide. */
+function progressMeta(p) {
+  const total = p.totalBusinesses != null ? nf(p.totalBusinesses) : '?';
+  return `fouille en cours · ${nf(p.scannedBusinesses)} entreprises parcourues / ${total}`;
+}
+
+/** Collecte arrêtée sans résultat, mais la source n’est pas épuisée : on dit où elle en est. */
+function pendingBox(p) {
+  const total = p.totalBusinesses != null ? ` sur ${nf(p.totalBusinesses)}` : '';
+  const box = stateBox(
+    'inbox',
+    'Rien trouvé pour l’instant',
+    `${nf(p.scannedBusinesses)} entreprises parcourues${total}, sans résultat. La fouille peut continuer sur les suivantes.`
+  );
+  const next = O('button', 'btn', 'Continuer la fouille');
+  next.type = 'button';
+  next.addEventListener('click', () => go(p.page));
+  box.append(uiButton(next));
+  return box;
+}
+
 function renderList(data) {
   const p = data.pagination;
   els.meta.textContent = data.collected
     ? scanMeta(p)
     : `page ${p.page} / ${Math.max(p.totalPages, 1)} · ${cacheLabel(data.cache)}`;
 
+  if (!data.items.length && data.collected && p.hasNext) {
+    els.results.replaceChildren(pendingBox(p));
+    return;
+  }
   if (!data.items.length) {
     els.results.replaceChildren(
       stateBox(
@@ -631,20 +656,15 @@ function renderScan(data) {
   els.meta.textContent = scanMeta(p);
 
   if (!data.items.length) {
-    const box = stateBox(
-      'inbox',
-      p.hasNext ? 'Recherche en cours…' : 'Aucun avis ne correspond',
+    els.results.replaceChildren(
       p.hasNext
-        ? 'Le parcours continue sur les entreprises suivantes. Relance la même page dans quelques secondes.'
-        : 'Essaie un texte plus large, une autre note d’avis, ou retire des filtres d’entreprise.'
+        ? pendingBox(p)
+        : stateBox(
+          'inbox',
+          'Aucun avis ne correspond',
+          'Essaie un texte plus large, une autre note d’avis, ou retire des filtres d’entreprise.'
+        )
     );
-    if (p.hasNext) {
-      const next = O('button', 'btn', 'Continuer');
-      next.type = 'button';
-      next.addEventListener('click', () => go(p.page));
-      box.append(uiButton(next));
-    }
-    els.results.replaceChildren(box);
     return;
   }
 
@@ -768,12 +788,15 @@ async function go(page = 1, depth = 0, waits = 0) {
 
   els.submit.disabled = true;
   els.submitLabel.textContent = kind === 'scan' || needsProfile(params) ? 'Fouille…' : 'Recherche…';
-  // L'en-tête reste en place pendant le chargement : la grille ne bouge pas à l'arrivée.
-  els.head.hidden = false;
-  els.count.textContent = '…';
-  els.countLabel.textContent = COUNT_LABELS[kind];
-  els.meta.textContent = NB;
-  skeletons(kind);
+  // Relance automatique d'une collecte : squelettes et avancement restent affichés.
+  if (!depth) {
+    // L'en-tête reste en place pendant le chargement : la grille ne bouge pas à l'arrivée.
+    els.head.hidden = false;
+    els.count.textContent = '…';
+    els.countLabel.textContent = COUNT_LABELS[kind];
+    els.meta.textContent = NB;
+    skeletons(kind);
+  }
 
   const qs = new URLSearchParams({ page: String(page) });
   for (const [name, value] of Object.entries(params)) if (value) qs.set(name, value);
@@ -791,14 +814,16 @@ async function go(page = 1, depth = 0, waits = 0) {
     }
     if (!res.ok) throw new Error(data.error || `Erreur ${res.status}`);
     if (state.controller !== controller) return;
+    // Une collecte interrompue par le budget sans aucun résultat : on relance (borné),
+    // en montrant l'avancement plutôt qu'un chargement muet.
+    if (data.collected && data.pagination.partial && !data.items.length && depth < 3) {
+      els.count.textContent = nf(data.pagination.found);
+      els.meta.textContent = progressMeta(data.pagination);
+      return go(page, depth + 1);
+    }
     state.page = data.params?.page ?? page;
     syncUrl();
     render(data);
-    // Une collecte interrompue par le budget sans aucun résultat : on relance (borné).
-    if (data.collected && data.pagination.partial && !data.items.length && depth < 3) {
-      resetSubmit(controller);
-      return go(page, depth + 1);
-    }
     els.head.scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (err) {
     if (err.name === 'AbortError' || state.controller !== controller) return;
