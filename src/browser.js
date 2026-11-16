@@ -21,11 +21,18 @@ function withTimeout(promise, ms) {
  * (léger : pas de rendu DOM, pas de rechargement complet).
  */
 export class BrowserSession {
-  /** @param {{ launchBrowser?: (options: object) => Promise<any> }} [deps] remplacé par un faux dans les tests */
+  /**
+   * @param {{ launchBrowser?: (options: object) => Promise<any>, sessionTtlMs?: number }} [deps]
+   *   `launchBrowser` remplacé par un faux dans les tests, `sessionTtlMs` raccourci
+   */
   constructor({
     launchBrowser = (options) => puppeteer.launch({ executablePath: findBrowser(), ...options }),
+    sessionTtlMs = 5 * 60 * 1000,
   } = {}) {
     this.launchBrowser = launchBrowser;
+    /** Sans requête réussie depuis cette durée, le jeton est tenu pour périmé. */
+    this.sessionTtlMs = sessionTtlMs;
+    this.idleTimer = null;
     this.browser = null;
     this.context = null;
     this.page = null;
@@ -41,7 +48,43 @@ export class BrowserSession {
   }
 
   get authenticated() {
-    return Boolean(this.tokenAt) && Date.now() - this.tokenAt < 5 * 60 * 1000;
+    return Boolean(this.tokenAt) && Date.now() - this.tokenAt < this.sessionTtlMs;
+  }
+
+  /** Le jeton vient de servir : il reste valable, et l'onglet aussi. */
+  markToken() {
+    this.tokenAt = Date.now();
+    this.armIdleClose(this.sessionTtlMs);
+  }
+
+  armIdleClose(delayMs) {
+    clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => this.closeIfIdle(), delayMs);
+    // Le minuteur ne retient pas le processus (arrêt du serveur, fin des tests).
+    this.idleTimer.unref?.();
+  }
+
+  /**
+   * Ferme l'onglet une fois le jeton périmé. Resté ouvert, il gardait l'accueil
+   * de Trustpilot en vie (animations, reCAPTCHA) : 30 à 60 % d'un cœur jour et
+   * nuit sur le VPS, sans le moindre visiteur (mesuré le 2026-11-16). Périmé,
+   * il ne sert plus : la requête suivante en rouvre un de toute façon.
+   */
+  async closeIfIdle() {
+    this.idleTimer = null;
+    if (!this.page) return;
+    // Un minuteur de Node peut partir 1 ms avant l'échéance lue par Date.now() :
+    // on repasse au bout du temps restant au lieu de laisser l'onglet ouvert.
+    if (this.authenticated) {
+      this.armIdleClose(Math.max(1, this.tokenAt + this.sessionTtlMs - Date.now()));
+      return;
+    }
+    // Une authentification, une relève ou une requête en cours : on repasse plus tard.
+    if (this.authPromise || this.resetPromise || this.inflight.size) {
+      this.armIdleClose(1000);
+      return;
+    }
+    await this.dropContext();
   }
 
   /** Lance le navigateur une seule fois, même si plusieurs requêtes arrivent ensemble. */
@@ -102,6 +145,8 @@ export class BrowserSession {
     // Le contexte est gardé en variable : une déconnexion peut vider `this.context` en cours de route.
     const context = this.context;
     this.page = page;
+    // Une authentification qui échoue laisse l'onglet ouvert : il se ferme aussi.
+    this.armIdleClose(this.sessionTtlMs);
 
     await withTimeout(
       page
@@ -133,7 +178,7 @@ export class BrowserSession {
         })
         .catch(() => false);
       if (ok) {
-        this.tokenAt = Date.now();
+        this.markToken();
         return;
       }
     }
@@ -243,7 +288,7 @@ export class BrowserSession {
 
         if (result.status === 200) {
           // Une réponse d'un ancien contexte ne dit rien du jeton courant.
-          if (generation === this.generation) this.tokenAt = Date.now();
+          if (generation === this.generation) this.markToken();
           return { html: result.text, generation };
         }
         // 202 : challenge AWS WAF servi à la place de la page.
@@ -272,6 +317,7 @@ export class BrowserSession {
   }
 
   async close() {
+    clearTimeout(this.idleTimer);
     await this.browser?.close().catch(() => {});
   }
 

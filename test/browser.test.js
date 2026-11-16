@@ -12,9 +12,9 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 function fakeSession(
   respond = (url) => ({ status: 200, text: `page ${url}` }),
-  { delay = () => 30 } = {}
+  { delay = () => 30, sessionTtlMs } = {}
 ) {
-  const stats = { launches: 0, pages: 0, browsers: [], calls: {}, closedUnder: 0 };
+  const stats = { launches: 0, pages: 0, opened: [], browsers: [], calls: {}, closedUnder: 0 };
   const cookies = async () => [{ name: 'aws-waf-token', expires: 0 }];
 
   const newPage = async () => {
@@ -42,6 +42,7 @@ function fakeSession(
         page.closed = true;
       },
     };
+    stats.opened.push(page);
     return page;
   };
 
@@ -63,7 +64,7 @@ function fakeSession(
     return browser;
   };
 
-  return { session: new BrowserSession({ launchBrowser }), stats };
+  return { session: new BrowserSession({ launchBrowser, sessionTtlMs }), stats };
 }
 
 /** Répond `status` à la première requête, puis 200. */
@@ -230,4 +231,72 @@ test('la fermeture d’un ancien navigateur n’efface pas la session du nouveau
   assert.equal(session.browser, stats.browsers[1]);
   assert.notEqual(session.page, null);
   assert.equal(session.status.authenticated, true);
+});
+
+test('un onglet resté sans requête se ferme une fois le jeton périmé', async () => {
+  const { session, stats } = fakeSession(undefined, { sessionTtlMs: 100 });
+  await session.fetchPage('/a');
+  assert.equal(stats.opened[0].closed, false);
+  await sleep(160);
+  assert.equal(stats.opened[0].closed, true);
+  assert.equal(session.status.page, false);
+  // La requête suivante rouvre un onglet, sans relancer le navigateur.
+  assert.equal((await session.fetchPage('/b')).html, 'page /b');
+  assert.equal(stats.pages, 2);
+  assert.equal(stats.launches, 1);
+});
+
+test('une requête réussie repousse la fermeture de l’onglet', async () => {
+  const { session, stats } = fakeSession(undefined, { sessionTtlMs: 150, delay: () => 5 });
+  await session.fetchPage('/a');
+  await sleep(100);
+  await session.fetchPage('/b');
+  await sleep(100);
+  assert.equal(stats.opened[0].closed, false);
+  await sleep(120);
+  assert.equal(stats.opened[0].closed, true);
+  assert.equal(stats.pages, 1);
+});
+
+test('la fermeture attend la requête en vol', async () => {
+  const delays = { '/lent': 250 };
+  const { session, stats } = fakeSession(undefined, {
+    sessionTtlMs: 100,
+    delay: (url) => delays[url] ?? 5,
+  });
+  await session.fetchPage('/warm');
+  // /lent part avant la péremption et finit après : l’onglet ne se ferme pas sous elle.
+  await sleep(60);
+  const lent = await session.fetchPage('/lent');
+  assert.equal(lent.html, 'page /lent');
+  assert.equal(stats.closedUnder, 0);
+  assert.equal(stats.opened[0].closed, false);
+  await sleep(160);
+  assert.equal(stats.opened[0].closed, true);
+});
+
+test('un onglet dont l’authentification échoue se ferme aussi', async () => {
+  const { session, stats } = fakeSession(undefined, { sessionTtlMs: 100 });
+  // Aucun jeton WAF : l’authentification échoue, l’onglet reste ouvert sur l’accueil.
+  session.authenticate = async function () {
+    await this.dropContext();
+    this.page = await this.newPage();
+    this.armIdleClose(this.sessionTtlMs);
+    throw new Error('Challenge AWS WAF non résolu');
+  };
+  await assert.rejects(session.ensureReady());
+  assert.equal(stats.opened[0].closed, false);
+  await sleep(160);
+  assert.equal(stats.opened[0].closed, true);
+});
+
+test('un minuteur parti avant l’échéance repasse au lieu d’abandonner', async () => {
+  const { session, stats } = fakeSession(undefined, { sessionTtlMs: 100 });
+  await session.fetchPage('/a');
+  // Le minuteur part alors que le jeton vaut encore quelques millisecondes.
+  session.tokenAt = Date.now() - 95;
+  await session.closeIfIdle();
+  assert.equal(stats.opened[0].closed, false);
+  await sleep(40);
+  assert.equal(stats.opened[0].closed, true);
 });
