@@ -707,7 +707,11 @@ function scanLine(text) {
 const progressed = (p, last) =>
   !last || p.found !== last.found || p.scannedBusinesses !== last.scannedBusinesses;
 
-/** Pause entre deux tours de la fouille de fond. */
+/**
+ * Écart minimal entre les débuts de deux tours de la fouille de fond : il évite
+ * de boucler à vide sur un serveur qui répond aussitôt, sans arrêter la collecte
+ * après un tour long.
+ */
 const FILL_PAUSE_MS = 1000;
 
 /**
@@ -715,14 +719,16 @@ const FILL_PAUSE_MS = 1000;
  * jusqu’à son plafond. Compteur, méta et pages suivent ; la page lue ne bouge
  * que si elle était incomplète. Toute nouvelle recherche ou page l’arrête.
  */
-async function fill(qs, controller, last) {
+async function fill(qs, controller, last, started) {
   qs.set('fill', '1');
   let waits = 0;
   while (state.controller === controller) {
-    await new Promise((resolve) => setTimeout(resolve, waits ? BUSY_WAIT_MS : FILL_PAUSE_MS));
+    const pause = waits ? BUSY_WAIT_MS : Math.max(0, FILL_PAUSE_MS - (Date.now() - started));
+    await new Promise((resolve) => setTimeout(resolve, pause));
     if (state.controller !== controller) return;
     let data;
     try {
+      started = Date.now();
       const res = await fetch('/api/find?' + qs, { signal: controller.signal });
       // Serveur occupé : on patiente, comme une recherche.
       if ((res.status === 429 || res.status === 503) && waits < BUSY_MAX_WAITS) {
@@ -856,6 +862,7 @@ async function go(page = 1, depth = 0, waits = 0, last = null) {
   for (const [name, value] of Object.entries(params)) if (value) qs.set(name, value);
 
   try {
+    const started = Date.now();
     const res = await fetch('/api/find?' + qs, { signal: controller.signal });
     const data = await res.json().catch(() => ({}));
     const retryAfter = Number(res.headers.get('Retry-After'));
@@ -882,7 +889,7 @@ async function go(page = 1, depth = 0, waits = 0, last = null) {
     els.head.scrollIntoView({ behavior: 'smooth', block: 'start' });
     if (data.collected && p.more && data.items.length) {
       qs.set('page', String(state.page));
-      fill(qs, controller, p);
+      fill(qs, controller, p, started);
     }
   } catch (err) {
     if (err.name === 'AbortError' || state.controller !== controller) return;

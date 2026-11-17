@@ -38,7 +38,10 @@ const isPermanent = (err) => err.status >= 400 && err.status < 500 && err.status
  * Un travail (`job`) fournit :
  * - `loadPage(n)` → `{ items, pagination }` de la source ;
  * - `keep(business)` → booléen, filtre appliqué par le serveur ;
- * - `enrich(business)` (facultatif) → résultat ou null si rien ne correspond.
+ * - `enrich(business)` (facultatif) → résultat ou null si rien ne correspond ;
+ * - `preload(n)` (facultatif) → préchauffe la page `n` de la source pendant la
+ *   lecture des fiches de la page précédente, pour que `loadPage(n)` la trouve
+ *   prête. Jamais attendu ; son échec est ignoré (`loadPage` relira la page).
  */
 export class Collector {
   constructor() {
@@ -73,6 +76,8 @@ export class Collector {
       owner: null,
       /** Requêtes qui attendent encore ce parcours. */
       waiters: 0,
+      /** Réveils des requêtes en attente : appelés à chaque résultat poussé et en fin de parcours. */
+      wakers: new Set(),
     };
     this.states.set(key, state);
     this.prune();
@@ -101,33 +106,80 @@ export class Collector {
     for (const b of targets) state.seen.add(b.domain);
 
     // L'ordre de poussée suit l'ordre de la source pour une pagination stable.
-    if (!job.enrich) state.hits.push(...targets);
-    else await this.enrichAll(state, job, targets.map((business) => ({ business, tries: 0 })));
+    if (!job.enrich) {
+      state.hits.push(...targets);
+      this.wake(state);
+      return;
+    }
+    // La page suivante part avant les fiches, pour prendre son créneau en tête de
+    // file : sinon le limiteur reste à moitié vide pendant sa lecture.
+    if (
+      job.preload &&
+      targets.length &&
+      !state.exhausted &&
+      pageNumber < CONFIG.reviewMaxScanPages &&
+      state.hits.length < CONFIG.reviewMaxHits
+    ) {
+      try {
+        const preloading = job.preload(pageNumber + 1);
+        if (typeof preloading?.catch === 'function') preloading.catch(() => {});
+      } catch {
+        /* simple préchauffage : `loadPage` relira la page */
+      }
+    }
+    await this.enrichAll(state, job, targets.map((business) => ({ business, tries: 0 })));
   }
 
   /**
    * Interroge les avis de chaque entreprise. Un échec passager n'est pas une
    * absence de correspondance : l'entreprise reste en attente pour le prochain appel.
+   * Les résultats sont poussés dès que toutes les fiches qui les précèdent sont lues :
+   * une requête comblée n'attend pas la fin de la page, et l'ordre reste celui de la source.
    */
   async enrichAll(state, job, entries) {
-    const results = await Promise.all(
-      entries.map(async ({ business, tries }) => {
+    const outcomes = new Array(entries.length);
+    let next = 0;
+    await Promise.all(
+      entries.map(async ({ business, tries }, i) => {
         try {
-          return { hit: await job.enrich(business) };
+          outcomes[i] = { hit: await job.enrich(business) };
         } catch (err) {
-          if (isPermanent(err)) return { hit: null };
-          if (tries + 1 >= MAX_ENRICH_TRIES) {
+          if (isPermanent(err)) outcomes[i] = { hit: null };
+          else if (tries + 1 >= MAX_ENRICH_TRIES) {
             console.warn('[scan] avis illisibles, entreprise abandonnée:', business.domain, err.message);
-            return { hit: null };
-          }
-          return { retry: { business, tries: tries + 1 } };
+            outcomes[i] = { hit: null };
+          } else outcomes[i] = { retry: { business, tries: tries + 1 } };
         }
+        if (i !== next) return;
+        while (next < entries.length && outcomes[next]) {
+          const { hit, retry } = outcomes[next++];
+          if (retry) state.pending.push(retry);
+          else if (hit) state.hits.push(hit);
+        }
+        this.wake(state);
       })
     );
-    for (const { hit, retry } of results) {
-      if (retry) state.pending.push(retry);
-      else if (hit) state.hits.push(hit);
-    }
+  }
+
+  /** Réveille les requêtes en attente pour qu'elles comparent les résultats à leur besoin. */
+  wake(state) {
+    for (const waker of [...state.wakers]) waker();
+  }
+
+  /**
+   * Attend que le parcours en cours se termine, ou que `needed` résultats soient là.
+   * Le réveil se retire de lui-même : rien ne reste accroché à l'état après le retour.
+   */
+  until(state, needed) {
+    return new Promise((resolve) => {
+      const waker = () => {
+        if (state.running && state.hits.length < needed) return;
+        state.wakers.delete(waker);
+        resolve();
+      };
+      state.wakers.add(waker);
+      waker();
+    });
   }
 
   /**
@@ -154,10 +206,13 @@ export class Collector {
   }
 
   async advance(state, job, needed, owner, signal) {
-    // Résultats déjà là (ils ne font que s'allonger) : la page n'attend pas le parcours en cours.
-    if (state.running && state.hits.length >= needed) return state;
     // Un scan en cours visait peut-être moins de résultats : on attend sa fin, puis on complète.
-    while (state.running) await state.running.catch(() => {});
+    // Résultats déjà là ou arrivés pendant l'attente (ils ne font que s'allonger) : la page
+    // n'attend pas la fin du parcours, qui continue sans elle.
+    while (state.running) {
+      if (state.hits.length >= needed) return state;
+      await this.until(state, needed);
+    }
     if (signal?.aborted) return state;
     const sourceDone = state.exhausted || state.capped;
     if (!state.pending.length && (state.hits.length >= needed || sourceDone)) return state;
@@ -199,9 +254,12 @@ export class Collector {
       })
       .finally(() => {
         state.running = null;
+        this.wake(state);
       });
 
-    await state.running.catch(() => {});
+    // Lancé pour réessayer les fiches en attente alors que les résultats suffisaient
+    // déjà : on attend ces essais. Sinon on revient dès que `needed` est atteint.
+    await this.until(state, state.hits.length >= needed ? Infinity : needed);
     if (state.error && !state.hits.length) throw state.error;
     return state;
   }

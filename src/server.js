@@ -145,7 +145,10 @@ async function searchPlan(params, options) {
 
 /** Page de résultats d'entreprises, dans le mode retenu pour cette recherche. */
 async function loadSearch(params, options) {
-  const plan = await searchPlan(params, options);
+  // Plan déjà connu : la page entre dans la file du limiteur sans attendre un tour,
+  // donc avant les fiches lancées juste après elle (préchargement d'un parcours).
+  const plan =
+    plans.get(buildPath({ ...params, page: 1 }, { semantic: false })) ?? (await searchPlan(params, options));
   const pathname = buildPath(params, plan);
   return { ...(await load(cache, pathname, parseSearchPage, options)), plan };
 }
@@ -301,6 +304,8 @@ async function findCollected(p, owner, signal) {
   };
   const job = {
     loadPage: (page) => loadSource(p, page),
+    // Même cache et même single-flight que `loadPage` : la lecture qui suit retombe sur cette requête.
+    preload: (page) => loadSource(p, page),
     keep: (() => {
       const keep = keepFor(p);
       return scan ? (b) => b.reviews > 0 && keep(b) : keep;
@@ -333,8 +338,15 @@ async function findCollected(p, owner, signal) {
   const lastUseful = Math.max(1, Math.ceil(hits.length / perPage));
   const current = Math.min(page, lastUseful);
   const offset = (current - 1) * perPage;
-  // Des entreprises en attente (avis illisibles pour l'instant) : relancer peut encore en trouver.
-  const more = (!state.exhausted && !state.capped) || state.pending.length > 0;
+  // La requête peut revenir avant la fin de la page du parcours : ses drapeaux ne sont
+  // pas encore posés. Plafond déjà atteint : il sera « capped » et rien de plus ne sera
+  // servi ; sinon les fiches restantes de la page peuvent encore donner des résultats.
+  const full = state.hits.length >= CONFIG.reviewMaxHits;
+  const capped = state.capped || (full && !state.exhausted);
+  // Des entreprises en attente (avis illisibles pour l'instant) : relancer peut encore en
+  // trouver, sauf au plafond, où un résultat de plus ne serait jamais servi.
+  const more =
+    !full && ((!state.exhausted && !state.capped) || Boolean(state.running) || state.pending.length > 0);
 
   return {
     kind: p.kind,
@@ -350,7 +362,7 @@ async function findCollected(p, owner, signal) {
       hasNext: hits.length > offset + perPage || (more && current < maxPage),
       hasPrevious: current > 1,
       exhausted: state.exhausted,
-      capped: state.capped,
+      capped,
       more,
       partial: state.partial && more,
     },
