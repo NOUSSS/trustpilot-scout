@@ -328,7 +328,9 @@ async function findCollected(p, owner, signal) {
   const state = await collector.ensure(key, job, needed, { owner, signal });
 
   // Page au-delà des résultats disponibles : on retombe sur la dernière utile.
-  const lastUseful = Math.max(1, Math.ceil(state.hits.length / perPage));
+  // La dernière page de la source peut dépasser le plafond : on n'en sert que le plafond.
+  const hits = state.hits.slice(0, CONFIG.reviewMaxHits);
+  const lastUseful = Math.max(1, Math.ceil(hits.length / perPage));
   const current = Math.min(page, lastUseful);
   const offset = (current - 1) * perPage;
   // Des entreprises en attente (avis illisibles pour l'instant) : relancer peut encore en trouver.
@@ -338,14 +340,14 @@ async function findCollected(p, owner, signal) {
     kind: p.kind,
     collected: true,
     params: { ...p, page: current },
-    items: state.hits.slice(offset, offset + perPage),
+    items: hits.slice(offset, offset + perPage),
     pagination: {
       page: current,
       perPage,
-      found: state.hits.length,
+      found: hits.length,
       scannedBusinesses: state.scannedItems,
       totalBusinesses: state.totalSource,
-      hasNext: state.hits.length > offset + perPage || (more && current < maxPage),
+      hasNext: hits.length > offset + perPage || (more && current < maxPage),
       hasPrevious: current > 1,
       exhausted: state.exhausted,
       capped: state.capped,
