@@ -15,27 +15,34 @@ function withTimeout(promise, ms) {
 }
 
 /**
- * Un seul navigateur + un seul onglet réutilisé.
- * L'onglet sert de "sac à cookies" : il résout le challenge AWS WAF une fois,
- * puis toutes les pages sont récupérées par fetch() dans son contexte
- * (léger : pas de rendu DOM, pas de rechargement complet).
+ * Un seul navigateur, deux onglets dans le même contexte (mêmes cookies).
+ * L'onglet de l'accueil résout le challenge AWS WAF et garde le jeton en vie ;
+ * les pages sont récupérées par fetch() depuis un second onglet inerte (page
+ * vide servie localement à l'adresse de l'accueil). Après le jeton, l'accueil
+ * se recharge et s'hydrate : un fetch envoyé de cet onglet-là était retardé,
+ * ou perdu si la navigation détruisait son contexte d'exécution.
  */
 export class BrowserSession {
   /**
-   * @param {{ launchBrowser?: (options: object) => Promise<any>, sessionTtlMs?: number }} [deps]
-   *   `launchBrowser` remplacé par un faux dans les tests, `sessionTtlMs` raccourci
+   * @param {{ launchBrowser?: (options: object) => Promise<any>, sessionTtlMs?: number, fetchTabTimeoutMs?: number }} [deps]
+   *   `launchBrowser` remplacé par un faux dans les tests, `sessionTtlMs` et `fetchTabTimeoutMs` raccourcis
    */
   constructor({
     launchBrowser = (options) => puppeteer.launch({ executablePath: findBrowser(), ...options }),
     sessionTtlMs = 5 * 60 * 1000,
+    fetchTabTimeoutMs = 5000,
   } = {}) {
     this.launchBrowser = launchBrowser;
     /** Sans requête réussie depuis cette durée, le jeton est tenu pour périmé. */
     this.sessionTtlMs = sessionTtlMs;
+    /** Au-delà, on renonce à l'onglet inerte : les fetch passent par l'accueil. */
+    this.fetchTabTimeoutMs = fetchTabTimeoutMs;
     this.idleTimer = null;
     this.browser = null;
     this.context = null;
     this.page = null;
+    /** Onglet inerte d'où partent les fetch ; null : repli sur l'onglet de l'accueil. */
+    this.fetchTab = null;
     this.tokenAt = 0;
     this.authPromise = null;
     this.launchPromise = null;
@@ -117,6 +124,7 @@ export class BrowserSession {
       this.browser = null;
       this.context = null;
       this.page = null;
+      this.fetchTab = null;
       this.tokenAt = 0;
     });
     this.browser = browser;
@@ -133,6 +141,48 @@ export class BrowserSession {
     });
     page.setDefaultTimeout(CONFIG.fetchTimeoutMs);
     return page;
+  }
+
+  /**
+   * Ouvre l'onglet inerte du contexte de `home` : une page vide servie
+   * localement à l'adresse de l'accueil, sans requête vers Trustpilot. Ses
+   * fetch partent avec les cookies du contexte et le même Referer. En cas
+   * d'échec ou de lenteur, `fetchTab` reste null : repli sur l'accueil.
+   */
+  async openFetchTab(context, home) {
+    // newPage() relancerait sinon un navigateur et un contexte sans jeton.
+    if (this.context !== context) return;
+    let tab = null;
+    const opening = (async () => {
+      tab = await this.newPage();
+      await tab.setRequestInterception(true);
+      tab.once('request', (req) => {
+        req
+          .respond({ status: 200, contentType: 'text/html', body: '<!doctype html><title>.</title>' })
+          .catch(() => {});
+      });
+      await tab.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+      await tab.setRequestInterception(false);
+      return tab;
+    })();
+    const opened = await withTimeout(
+      opening.catch((err) => {
+        console.warn('[onglet] ouverture échouée, repli sur l’accueil :', err.message);
+        return null;
+      }),
+      this.fetchTabTimeoutMs
+    );
+    // Installé seulement dans le contexte de cette authentification, toujours en place.
+    if (opened && this.context === context && this.page === home) {
+      this.fetchTab = opened;
+      return;
+    }
+    if (opened === undefined) console.warn('[onglet] ouverture trop lente, repli sur l’accueil');
+    // Onglet à moitié ouvert, ou ouvert trop tard : fermé dès qu'il existe.
+    opening.then(
+      (late) => withTimeout(late.close().catch(() => {}), 4000),
+      () => withTimeout(tab?.close().catch(() => {}), 4000)
+    );
   }
 
   /**
@@ -178,6 +228,8 @@ export class BrowserSession {
         })
         .catch(() => false);
       if (ok) {
+        // L'accueil se recharge encore : les fetch partiront d'un onglet au repos.
+        await this.openFetchTab(context, page);
         this.markToken();
         return;
       }
@@ -197,10 +249,13 @@ export class BrowserSession {
     this.tokenAt = 0;
     const page = this.page;
     const context = this.context;
+    const fetchTab = this.fetchTab;
     this.page = null;
     this.context = null;
+    this.fetchTab = null;
     if (page || context) this.generation++;
     // La fermeture peut rester bloquée si un fetch est en cours : on borne.
+    await withTimeout(fetchTab?.close().catch(() => {}), 4000);
     await withTimeout(page?.close().catch(() => {}), 4000);
     await withTimeout(context?.close().catch(() => {}), 4000);
   }
@@ -255,7 +310,8 @@ export class BrowserSession {
         await new Promise((r) => setTimeout(r, 1200));
         continue;
       }
-      const page = this.page;
+      // L'onglet inerte s'il a pu s'ouvrir, sinon celui de l'accueil.
+      const page = this.fetchTab ?? this.page;
       const generation = this.generation;
       if (!page) continue;
       try {
