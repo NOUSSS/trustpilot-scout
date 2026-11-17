@@ -154,6 +154,8 @@ export class Collector {
   }
 
   async advance(state, job, needed, owner, signal) {
+    // Résultats déjà là (ils ne font que s'allonger) : la page n'attend pas le parcours en cours.
+    if (state.running && state.hits.length >= needed) return state;
     // Un scan en cours visait peut-être moins de résultats : on attend sa fin, puis on complète.
     while (state.running) await state.running.catch(() => {});
     if (signal?.aborted) return state;

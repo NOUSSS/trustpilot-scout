@@ -220,6 +220,8 @@ export function normalizeFindParams(searchParams) {
   return {
     kind, q, domain, category, country, city, trustscore, numberOfReviews,
     term, phrase, rating, language, sort, claimed, replies, page: readPage(searchParams, maxPage),
+    // Fouille de fond : la collecte avance jusqu'à son plafond, pas seulement jusqu'à la page.
+    fill: searchParams.get('fill') === '1',
   };
 }
 

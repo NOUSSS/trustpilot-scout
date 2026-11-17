@@ -64,7 +64,8 @@ Variables utiles :
 | `TP_BROWSER_PATH` | auto | Chemin vers `msedge.exe` / `chrome.exe` |
 | `TP_CACHE_TTL_MS` | `600000` | Durée de vie du cache (10 min) |
 | `TP_CONCURRENCY` | `3` | Requêtes simultanées vers Trustpilot |
-| `TP_SCAN_MAX_PAGES` | `40` | Pages d'entreprises explorées max par recherche d'avis |
+| `TP_SCAN_MAX_PAGES` | `100` | Pages d'entreprises explorées max par recherche d'avis |
+| `TP_SCAN_MAX_HITS` | `600` | Résultats max d'une collecte (fouille ou filtre du serveur) |
 | `TP_SCAN_BUDGET_MS` | `20000` | Budget temps d'un scan d'avis |
 | `TP_RATE_LIMIT_PER_MIN` | `120` | Requêtes `/api/find` par minute et par client (`0` : sans limite) |
 | `TP_MAX_ACTIVE_SCANS` | `4` | Parcours simultanés au total (2 par client) |
@@ -125,7 +126,9 @@ Le serveur explore les pages de la source (recherche ou secteur), interroge les 
 chacune et n'ajoute que celles qui ont au moins une correspondance. Un « état de
 scan » est mémorisé par critères : les requêtes suivantes (page 2, 3…) reprennent
 le même état, ne téléchargent que ce qui manque et partagent le travail en cours.
-Le scan est borné par un budget temps et un nombre de pages, avec reprise possible.
+Une fois la première page affichée, l'interface relance d'elle-même la collecte
+(`fill=1`) jusqu'à son plafond : le compteur et les pages suivent. Chaque tour est
+borné par le budget temps ; la fouille s'arrête si la page est quittée.
 
 ## API
 
@@ -143,11 +146,13 @@ Tous les paramètres sont facultatifs, mais il faut au moins `q`, `category` ou 
 - `sort` — `relevance`, `reviews` ou `recent` (secteur ; avis d’une entreprise
   hors `reviews`)
 - `page` — à partir de 1
+- `fill` — `1` : une collecte avance jusqu'à son plafond, pas seulement jusqu'à la page
 
 Renvoie `kind` (`company`, `scan` ou `list`), `items` et `pagination`. Une
 collecte filtrée par le serveur (fouille des avis, ou nom et nombre d’avis
 appliqués à un secteur) renvoie `collected: true` et une pagination sur ce qui
-a été trouvé (`found`, `scannedBusinesses`, `totalBusinesses`, `partial`).
+a été trouvé (`found`, `scannedBusinesses`, `totalBusinesses`, `partial`, `capped`,
+`more` : la collecte peut encore trouver des résultats).
 
 `GET /api/health` — état du navigateur, du jeton et du cache.
 

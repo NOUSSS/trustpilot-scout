@@ -35,9 +35,9 @@ export const CONFIG = {
 
   /** Recherche dans les avis : bornes de scan. */
   reviewPerPage: 8,
-  reviewMaxScanPages: envNumber('TP_SCAN_MAX_PAGES', 40, 1),
+  reviewMaxScanPages: envNumber('TP_SCAN_MAX_PAGES', 100, 1),
   reviewScanBudgetMs: envNumber('TP_SCAN_BUDGET_MS', 20000),
-  reviewMaxHits: 240,
+  reviewMaxHits: envNumber('TP_SCAN_MAX_HITS', 600, 1),
   reviewSnippets: 3,
   reviewStateTtlMs: 10 * 60 * 1000,
   reviewStateMax: 60,

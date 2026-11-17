@@ -75,8 +75,10 @@ test('normalizeFindParams applique les valeurs par défaut', () => {
   assert.deepEqual(find('q=fnac'), {
     kind: 'list', q: 'fnac', domain: null, category: '', country: '', city: '',
     trustscore: '', numberOfReviews: '', term: '', phrase: '', rating: '', language: 'all',
-    sort: 'relevance', claimed: '', replies: '', page: 1,
+    sort: 'relevance', claimed: '', replies: '', page: 1, fill: false,
   });
+  assert.equal(find('q=x&fill=1').fill, true);
+  assert.equal(find('q=x&fill=oui').fill, false);
   assert.equal(find('q=x&country=fr').country, 'FR');
   assert.equal(find('q=  deux   mots ').q, 'deux mots');
 });

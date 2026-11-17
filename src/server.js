@@ -32,9 +32,6 @@ import {
 import { Collector, reviewMatches } from './reviews.js';
 import { RateLimiter } from './ratelimit.js';
 
-/** Pages de résultats maximum d'une collecte filtrée par le serveur. */
-const MAX_SCAN_PAGE = 50;
-
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, '..', 'public');
 
@@ -324,8 +321,11 @@ async function findCollected(p, owner, signal) {
     p.category ? p.sort : '', p.term, p.phrase, p.rating, p.language, p.claimed, p.replies,
   ]);
   const fresh = !collector.peek(key);
-  const page = Math.min(p.page, MAX_SCAN_PAGE);
-  const state = await collector.ensure(key, job, page * perPage + 1, { owner, signal });
+  // Pages de résultats maximum : celles que remplit le plafond de résultats.
+  const maxPage = Math.ceil(CONFIG.reviewMaxHits / perPage);
+  const page = Math.min(p.page, maxPage);
+  const needed = p.fill ? CONFIG.reviewMaxHits : page * perPage + 1;
+  const state = await collector.ensure(key, job, needed, { owner, signal });
 
   // Page au-delà des résultats disponibles : on retombe sur la dernière utile.
   const lastUseful = Math.max(1, Math.ceil(state.hits.length / perPage));
@@ -345,9 +345,11 @@ async function findCollected(p, owner, signal) {
       found: state.hits.length,
       scannedBusinesses: state.scannedItems,
       totalBusinesses: state.totalSource,
-      hasNext: state.hits.length > offset + perPage || (more && current < MAX_SCAN_PAGE),
+      hasNext: state.hits.length > offset + perPage || (more && current < maxPage),
       hasPrevious: current > 1,
       exhausted: state.exhausted,
+      capped: state.capped,
+      more,
       partial: state.partial && more,
     },
     cache: fresh ? 'miss' : 'shared',

@@ -103,3 +103,32 @@ test('Collector : rejoindre un scan en cours donne quand même la page demandée
   // Aucune page de la source lue deux fois.
   assert.deepEqual(calls, [1, 2, 3, 4]);
 });
+
+test('Collector : une page déjà trouvée n’attend pas le parcours en cours', async () => {
+  const collector = new Collector();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const job = {
+    loadPage: async (n) => {
+      if (n > 1) await gate;
+      return {
+        items: Array.from({ length: 20 }, (_, i) => ({ domain: `p${n}-${i}.com`, reviews: 5 })),
+        pagination: { totalResults: 2000, totalPages: 100 },
+      };
+    },
+    keep: () => true,
+    enrich: null,
+  };
+  await collector.ensure('k', job, 9);
+  // Fouille de fond : elle reste bloquée sur la page 2.
+  const background = collector.ensure('k', job, 600);
+  await sleep(5);
+  const page = await Promise.race([
+    collector.ensure('k', job, 17),
+    sleep(200).then(() => 'bloquée'),
+  ]);
+  assert.notEqual(page, 'bloquée');
+  assert.equal(page.hits.length, 20);
+  release();
+  await background;
+});

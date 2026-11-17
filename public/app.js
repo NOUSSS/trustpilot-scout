@@ -576,7 +576,7 @@ const cacheLabel = (c) => (c === 'hit' ? 'cache' : c === 'shared' ? 'requête pa
 function scanMeta(p) {
   const total = p.totalBusinesses != null ? nf(p.totalBusinesses) : '?';
   return `page ${p.page} · ${nf(p.scannedBusinesses)} entreprises parcourues / ${total}` +
-    (p.partial ? ' · parcours interrompu' : '');
+    (p.capped ? ' · limite de la fouille atteinte' : '');
 }
 
 /** Méta pendant les relances automatiques d'une collecte encore vide. */
@@ -690,12 +690,66 @@ function render(data) {
   else if (data.kind === 'company') renderCompany(data);
   else renderList(data);
 
-  // Collecte interrompue par le budget : on le dit sous les résultats.
-  if (data.collected && data.items.length && data.pagination.partial) {
-    const line = O('div', 'tag tag-warning scanline');
-    line.append(O('span', 'dot'), O('span', null, 'Parcours interrompu par le budget : relance pour aller plus loin.'));
-    els.results.append(line);
+  // La fouille de fond continue : on le dit sous les résultats.
+  if (data.collected && data.items.length && data.pagination.more) scanLine('Fouille en cours, d’autres résultats arrivent…');
+}
+
+/** Ligne d’état de la fouille sous les résultats ; sans texte, elle disparaît. */
+function scanLine(text) {
+  els.results.querySelector('.scanline')?.remove();
+  if (!text) return;
+  const line = O('div', 'tag tag-warning scanline');
+  line.append(O('span', 'dot'), O('span', null, text));
+  els.results.append(line);
+}
+
+/** La collecte a-t-elle avancé depuis la réponse précédente ? */
+const progressed = (p, last) =>
+  !last || p.found !== last.found || p.scannedBusinesses !== last.scannedBusinesses;
+
+/** Pause entre deux tours de la fouille de fond. */
+const FILL_PAUSE_MS = 1000;
+
+/**
+ * Fouille de fond : une fois la page affichée, la collecte continue d’elle-même
+ * jusqu’à son plafond. Compteur, méta et pages suivent ; la page lue ne bouge
+ * que si elle était incomplète. Toute nouvelle recherche ou page l’arrête.
+ */
+async function fill(qs, controller, last) {
+  qs.set('fill', '1');
+  let waits = 0;
+  while (state.controller === controller) {
+    await new Promise((resolve) => setTimeout(resolve, waits ? BUSY_WAIT_MS : FILL_PAUSE_MS));
+    if (state.controller !== controller) return;
+    let data;
+    try {
+      const res = await fetch('/api/find?' + qs, { signal: controller.signal });
+      // Serveur occupé : on patiente, comme une recherche.
+      if ((res.status === 429 || res.status === 503) && waits < BUSY_MAX_WAITS) {
+        waits++;
+        continue;
+      }
+      if (!res.ok) break;
+      waits = 0;
+      data = await res.json();
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      break;
+    }
+    if (state.controller !== controller) return;
+    const p = data.pagination;
+    if (data.items.length !== state.data.items.length) render(data);
+    else {
+      state.data = data;
+      els.count.textContent = nf(p.found);
+      els.meta.textContent = scanMeta(p);
+      els.results.querySelector('.pager')?.replaceWith(renderPager(p));
+    }
+    if (!p.more) return scanLine('');
+    if (!progressed(p, last)) break;
+    last = p;
   }
+  if (state.controller === controller) scanLine('Fouille interrompue : relance la page pour aller plus loin.');
 }
 
 function idleState() {
@@ -762,7 +816,7 @@ const BUSY_MAX_WAITS = 12;
 /** Au-delà de ce délai annoncé par le serveur, c'est une vraie limite : on l'affiche. */
 const BUSY_MAX_RETRY_AFTER_S = 5;
 
-async function go(page = 1, depth = 0, waits = 0) {
+async function go(page = 1, depth = 0, waits = 0, last = null) {
   const params = state.params ?? readForm();
   state.params = params;
   updateFields(params);
@@ -810,21 +864,26 @@ async function go(page = 1, depth = 0, waits = 0) {
     if (busy && waits < BUSY_MAX_WAITS) {
       await new Promise((resolve) => setTimeout(resolve, BUSY_WAIT_MS));
       if (state.controller !== controller) return;
-      return go(page, depth, waits + 1);
+      return go(page, depth, waits + 1, last);
     }
     if (!res.ok) throw new Error(data.error || `Erreur ${res.status}`);
     if (state.controller !== controller) return;
-    // Une collecte interrompue par le budget sans aucun résultat : on relance (borné),
+    // Une collecte encore vide qui peut trouver plus : on relance tant qu'elle avance,
     // en montrant l'avancement plutôt qu'un chargement muet.
-    if (data.collected && data.pagination.partial && !data.items.length && depth < 3) {
-      els.count.textContent = nf(data.pagination.found);
-      els.meta.textContent = progressMeta(data.pagination);
-      return go(page, depth + 1);
+    const p = data.pagination;
+    if (data.collected && p.more && !data.items.length && progressed(p, last)) {
+      els.count.textContent = nf(p.found);
+      els.meta.textContent = progressMeta(p);
+      return go(page, depth + 1, waits, p);
     }
     state.page = data.params?.page ?? page;
     syncUrl();
     render(data);
     els.head.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (data.collected && p.more && data.items.length) {
+      qs.set('page', String(state.page));
+      fill(qs, controller, p);
+    }
   } catch (err) {
     if (err.name === 'AbortError' || state.controller !== controller) return;
     errorState(
