@@ -53,15 +53,39 @@ export const SORTS = [
 
 const CATEGORY_SORT = { relevance: 'most_relevant', reviews: 'reviews_count', recent: 'latest_review' };
 
-/** Marchés principaux de Trustpilot (codes ISO, noms traduits côté client). */
-export const COUNTRIES = [
-  'FR', 'BE', 'CH', 'LU', 'CA', 'MA', 'TN', 'DZ', 'SN', 'CI',
-  'US', 'GB', 'IE', 'DE', 'AT', 'NL', 'IT', 'ES', 'PT', 'DK', 'SE', 'NO', 'FI',
-  'PL', 'CZ', 'SK', 'HU', 'RO', 'BG', 'GR', 'EE', 'UA',
-  'AU', 'NZ', 'ZA', 'JP', 'SG', 'HK', 'CN', 'BR',
+/**
+ * Continents : chacun regroupe des pays de la liste, cherchés un par un, car
+ * Trustpilot ne filtre qu'un pays à la fois. Identifiants en toutes lettres,
+ * pour ne pas se confondre avec un code ISO (AF, NA, SA…).
+ */
+export const CONTINENTS = [
+  {
+    id: 'europe',
+    name: 'Europe',
+    countries: [
+      'FR', 'BE', 'CH', 'LU', 'GB', 'IE', 'DE', 'AT', 'NL', 'IT', 'ES', 'PT', 'DK', 'SE', 'NO', 'FI',
+      'PL', 'CZ', 'SK', 'HU', 'RO', 'BG', 'GR', 'EE', 'UA',
+    ],
+  },
+  { id: 'afrique', name: 'Afrique', countries: ['MA', 'TN', 'DZ', 'SN', 'CI', 'ZA'] },
+  { id: 'amerique-nord', name: 'Amérique du Nord', countries: ['US', 'CA', 'MX'] },
+  { id: 'amerique-sud', name: 'Amérique du Sud', countries: ['BR', 'AR', 'CO', 'CL'] },
+  { id: 'asie', name: 'Asie', countries: ['JP', 'CN', 'HK', 'SG', 'KR', 'IN', 'AE'] },
+  { id: 'oceanie', name: 'Océanie', countries: ['AU', 'NZ'] },
 ];
 
-/** Catégories (noms français relevés sur fr.trustpilot.com). */
+/** Marchés principaux de Trustpilot (codes ISO, noms traduits côté client). */
+export const COUNTRIES = CONTINENTS.flatMap((c) => c.countries);
+
+const CONTINENT_COUNTRIES = new Map(CONTINENTS.map((c) => [c.id, c.countries]));
+
+/** Pays d'un continent choisi, ou null pour un pays seul (ou aucun). */
+export const continentCountries = (country) => CONTINENT_COUNTRIES.get(country) ?? null;
+
+/**
+ * Catégories sur trois niveaux : secteur, sous-secteur, spécialité (noms
+ * français relevés sur fr.trustpilot.com, apostrophes typographiques).
+ */
 export const CATEGORIES = JSON.parse(
   fs.readFileSync(new URL('./categories.fr.json', import.meta.url), 'utf8')
 );
@@ -74,7 +98,9 @@ const CLAIMED_SET = new Set(CLAIMED.map((o) => o.value).filter(Boolean));
 const REPLIES_SET = new Set(REPLIES.map((o) => o.value).filter(Boolean));
 const SORT_SET = new Set(SORTS.map((o) => o.value));
 const COUNTRY_SET = new Set(COUNTRIES);
-const CATEGORY_SET = new Set(CATEGORIES.flatMap((c) => [c.id, ...c.sub.map((s) => s.id)]));
+const CATEGORY_SET = new Set(
+  CATEGORIES.flatMap((c) => [c.id, ...c.sub.flatMap((s) => [s.id, ...(s.sub ?? []).map((l) => l.id)])])
+);
 
 const MAX_PAGE = 1000;
 /** Au-delà de la 10e page d'avis, Trustpilot exige une connexion. */
@@ -175,13 +201,17 @@ export function normalizeFindParams(searchParams) {
   const domain = domainFrom(q);
 
   const category = clean(searchParams.get('category'), 80);
-  // Les secteurs fins (« bank », « cafe »…) ne sont pas listés mais existent : on laisse passer leur forme.
+  // Un secteur apparu depuis le relevé de la liste existe peut-être : on laisse passer sa forme.
   if (category && !CATEGORY_SET.has(category) && !/^[a-z0-9]+(?:_[a-z0-9]+)*$/.test(category)) {
     throw new ValidationError(`Secteur inconnu : ${category}`);
   }
 
-  const country = clean(searchParams.get('country'), 2).toUpperCase();
-  if (country && !COUNTRY_SET.has(country)) throw new ValidationError(`Pays invalide : ${country}`);
+  // Un pays (code ISO) ou un continent (identifiant en minuscules).
+  const place = clean(searchParams.get('country'), 20);
+  const country = continentCountries(place.toLowerCase()) ? place.toLowerCase() : place.toUpperCase();
+  if (country && !COUNTRY_SET.has(country) && !continentCountries(country)) {
+    throw new ValidationError(`Pays invalide : ${place}`);
+  }
   const city = clean(searchParams.get('city'), 80);
 
   const trustscore = clean(searchParams.get('stars'), 8);
@@ -360,6 +390,28 @@ function paginate(page, totalPages, totalResults, pageSize) {
     totalResults,
     hasNext: page < totalPages,
     hasPrevious: page > 1,
+  };
+}
+
+/**
+ * Page `round` d'un continent, faite des pages `round` de ses pays (null : pays
+ * sans page à ce tour). Les entreprises alternent d'un pays à l'autre, ou sont
+ * rangées par nombre d'avis quand c'est le tri demandé. `sourcePages` compte les
+ * pages réellement lues, pour le plafond du parcours.
+ */
+export function mergeCountryPages(pages, round, { byReviews = false } = {}) {
+  const lists = pages.filter(Boolean);
+  const items = [];
+  const longest = Math.max(0, ...lists.map((p) => p.items.length));
+  for (let i = 0; i < longest; i++) {
+    for (const p of lists) if (i < p.items.length) items.push(p.items[i]);
+  }
+  if (byReviews) items.sort((a, b) => b.reviews - a.reviews);
+  const totalPages = Math.max(0, ...lists.map((p) => p.pagination.totalPages));
+  const totalResults = lists.reduce((sum, p) => sum + p.pagination.totalResults, 0);
+  return {
+    items,
+    pagination: { ...paginate(round, totalPages, totalResults, items.length), sourcePages: lists.length },
   };
 }
 

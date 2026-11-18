@@ -73,16 +73,25 @@ const uiButton = (button) => {
   return wrap;
 };
 
-/** Remplit un `ui-select` : une entrée par option, coche comprise. */
+/** Entrée d'un `ui-select`, coche comprise. */
+function selectItem({ value, label }) {
+  const item = O('ui-select-item');
+  item.setAttribute('value', value);
+  item.setAttribute('label', label);
+  item.append(O('ui-select-item-text', null, label), O('ui-select-item-indicator'));
+  return item;
+}
+
+/** Groupe nommé d'entrées d'un `ui-select`. */
+function selectGroup(label, list) {
+  const group = O('ui-select-group');
+  group.append(O('ui-select-group-label', null, label), ...list.map(selectItem));
+  return group;
+}
+
+/** Remplit un `ui-select` : une entrée par option. */
 function fillSelect(el, list) {
-  const items = list.map(({ value, label }) => {
-    const item = O('ui-select-item');
-    item.setAttribute('value', value);
-    item.setAttribute('label', label);
-    item.append(O('ui-select-item-text', null, label), O('ui-select-item-indicator'));
-    return item;
-  });
-  el.querySelector('ui-select-list').replaceChildren(...items);
+  el.querySelector('ui-select-list').replaceChildren(...list.map(selectItem));
 }
 
 const hasItem = (el, value) =>
@@ -97,14 +106,21 @@ const highlighted = (s) =>
 
 const plain = (s) => String(s ?? '').replace(/<\/?em>/g, '');
 
+/** Texte comparable à une saisie : sans accents ni majuscules. */
+const fold = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
 /** Guillemets français, espaces insécables comprises. */
 const quoted = (s) => `« ${s} »`;
 
 const regionNames = new Intl.DisplayNames(['fr'], { type: 'region' });
 const languageNames = new Intl.DisplayNames(['fr'], { type: 'language' });
 
-/** Nom de pays lisible : Trustpilot donne tantôt « France », tantôt « FR ». */
+/** Continents de la liste des pays, par identifiant. */
+const continentNames = new Map();
+
+/** Nom de pays lisible : Trustpilot donne tantôt « France », tantôt « FR ». Un continent garde son nom. */
 const countryName = (value) => {
+  if (continentNames.has(value)) return continentNames.get(value);
   if (!/^[A-Z]{2}$/.test(value ?? '')) return value ?? '';
   try {
     return regionNames.of(value);
@@ -133,7 +149,7 @@ const nf = (n) => Number(n ?? 0).toLocaleString('fr-FR');
 
 /* ---------- Options ---------- */
 const categoryNames = new Map();
-/** Secteurs à plat, dans l'ordre de Trustpilot : chaque secteur suivi de ses sous-secteurs. */
+/** Secteurs à plat, dans l'ordre de Trustpilot : chaque secteur suivi de ses sous-secteurs, puis de leurs spécialités. */
 const categories = [];
 const labels = { stars: new Map(), reviews: new Map(), rating: new Map(), sort: new Map() };
 
@@ -159,13 +175,27 @@ async function loadOptions() {
       for (const sub of top.sub) {
         categoryNames.set(sub.id, sub.name);
         categories.push({ id: sub.id, name: sub.name, parent: top.name });
+        for (const leaf of sub.sub ?? []) {
+          categoryNames.set(leaf.id, leaf.name);
+          const ancestors = `${sub.name} ${top.name}`;
+          categories.push({
+            id: leaf.id, name: leaf.name, parent: sub.name, parentId: sub.id, ancestors, leaf: true,
+            search: fold(`${leaf.name} ${ancestors}`),
+          });
+        }
       }
     }
 
     const countries = data.countries
       .map((code) => ({ code, name: countryName(code) }))
       .sort((a, b) => a.name.localeCompare(b.name, 'fr'));
-    fillSelect(els.country, [{ value: '', label: 'Tous les pays' }, ...countries.map((c) => ({ value: c.code, label: c.name }))]);
+    for (const c of data.continents) continentNames.set(c.id, c.name);
+    // Un continent d'abord, pour aller vite ; un pays ensuite, pour être précis.
+    els.country.querySelector('ui-select-list').replaceChildren(
+      selectItem({ value: '', label: 'Tous les pays' }),
+      selectGroup('Continents', data.continents.map((c) => ({ value: c.id, label: c.name }))),
+      selectGroup('Pays', countries.map((c) => ({ value: c.code, label: c.name })))
+    );
     fillSelect(
       els.lang,
       data.reviewLanguages.map((code) => ({ value: code, label: code === 'all' ? 'Toutes' : languageName(code) }))
@@ -254,8 +284,14 @@ function describe(p) {
   if (kind === 'scan') sentence += `, qui ont des avis ${reviewParts.join(', ')}`;
   if (p.category && sortLabel) sentence += `, triées par ${sortLabel}`;
   sentence += '.';
-  if (kind === 'scan') sentence += ' Les avis de chaque entreprise sont interrogés un à un : compte quelques secondes.';
-  else if (needsProfile(p)) sentence += ' La fiche de chaque entreprise est lue une à une : compte quelques secondes.';
+  const slow = [];
+  if (continentNames.has(p.country)) slow.push('chaque pays du continent est interrogé');
+  if (kind === 'scan') slow.push('les avis de chaque entreprise sont interrogés un à un');
+  else if (needsProfile(p)) slow.push('la fiche de chaque entreprise est lue une à une');
+  if (slow.length) {
+    const said = slow.join(', puis ');
+    sentence += ` ${said.charAt(0).toUpperCase()}${said.slice(1)} : compte quelques secondes.`;
+  }
   return sentence;
 }
 
@@ -796,6 +832,8 @@ function fillForm(search) {
       continue;
     }
     // Valeur absente d'une liste (secteur inconnu compris) : on garde le défaut.
+    // Spécialité choisie dans l'URL : elle entre dans la liste avant d'y être cherchée.
+    if (name === 'category') showLeaves('', value);
     if (!hasItem(el, value)) value = DEFAULTS[name] ?? '';
     el.value = value || (name === 'category' ? null : value);
   }
@@ -962,19 +1000,50 @@ function exportCsv() {
 }
 
 /* ---------- Listes : secteur, pays, notes, tri ---------- */
-/** Secteurs dans la liste : chaque secteur suivi de ses sous-secteurs, qui rappellent leur parent. */
+/** Éléments de la liste des secteurs, par identifiant. */
+const categoryItems = new Map();
+
+/**
+ * Secteurs dans la liste : chaque secteur suivi de ses sous-secteurs, qui
+ * rappellent leur parent. Les spécialités n'y entrent qu'à la demande (`showLeaves`).
+ */
 function fillCategories() {
-  const items = categories.map((c) => {
-    const item = O('ui-combobox-item', c.group ? 'group' : 'sub');
+  for (const c of categories) {
+    const item = O('ui-combobox-item', c.group ? 'group' : c.leaf ? 'sub leaf' : 'sub');
     item.setAttribute('value', c.id);
     item.setAttribute('label', c.name);
-    if (c.parent) item.setAttribute('keywords', c.parent);
+    // Taper « montre » trouve aussi l'horlogerie, rangée sous « Bijoux & montres ».
+    if (c.parent) item.setAttribute('keywords', c.ancestors ?? c.parent);
     item.append(O('ui-combobox-item-text', null, c.name));
     if (c.parent) item.append(O('span', 'combo-parent', ` · ${c.parent}`));
     item.append(O('ui-combobox-item-indicator'));
-    return item;
-  });
-  els.categoryList.replaceChildren(...items);
+    categoryItems.set(c.id, item);
+  }
+  els.categoryList.replaceChildren(...categories.filter((c) => !c.leaf).map((c) => categoryItems.get(c.id)));
+}
+
+/**
+ * Spécialités présentes dans la liste : celle choisie, et celles qui répondent à
+ * la saisie (deux lettres au moins), chacune sous son sous-secteur. Toutes
+ * ensemble (près de 3 000), la liste mettrait dix fois plus de temps à s'ouvrir
+ * et à filtrer chaque frappe.
+ */
+function showLeaves(query, selected) {
+  const q = fold(query.trim());
+  const wanted = categories.filter((c) => c.leaf && (c.id === selected || (q.length >= 2 && c.search.includes(q))));
+  const keep = new Set(wanted.map((c) => categoryItems.get(c.id)));
+  for (const item of els.categoryList.querySelectorAll('.leaf')) if (!keep.has(item)) item.remove();
+  let anchor = null;
+  let parentId = null;
+  for (const c of wanted) {
+    if (c.parentId !== parentId) {
+      parentId = c.parentId;
+      anchor = categoryItems.get(parentId);
+    }
+    const item = categoryItems.get(c.id);
+    if (anchor.nextElementSibling !== item) anchor.after(item);
+    anchor = item;
+  }
 }
 
 /** Choix dans une liste : la recherche repart de la page 1 quand la combinaison est complète. */
@@ -988,8 +1057,9 @@ function setupLists() {
   els.category.itemToLabel = (id) => categoryNames.get(id) ?? '';
   // Le parent d'un sous-secteur ne sert qu'à le situer dans une liste filtrée.
   els.category.addEventListener('querychange', (e) => {
-    const content = els.category.querySelector('ui-combobox-content');
-    content.classList.toggle('is-filtering', Boolean(e.detail.value) && e.detail.reason !== 'item-press');
+    const filtering = Boolean(e.detail.value) && e.detail.reason !== 'item-press';
+    els.category.querySelector('ui-combobox-content').classList.toggle('is-filtering', filtering);
+    showLeaves(filtering ? e.detail.value : '', valueOf('category'));
   });
   for (const name of LISTS) {
     els[name].addEventListener('valuechange', (e) => picked(name, e.detail.value));

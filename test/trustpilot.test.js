@@ -17,6 +17,11 @@ import {
   parseSearchPage,
   parseCategoryPage,
   parseCompanyPage,
+  continentCountries,
+  mergeCountryPages,
+  CONTINENTS,
+  COUNTRIES,
+  CATEGORIES,
 } from '../src/trustpilot.js';
 
 /** Page Trustpilot minimale : seul le JSON `__NEXT_DATA__` compte pour les parseurs. */
@@ -140,6 +145,50 @@ test('normalizeFindParams refuse les valeurs invalides en 400', () => {
   for (const query of invalid) {
     assert.throws(() => find(query), (err) => err.status === 400, query);
   }
+});
+
+test('normalizeFindParams accepte un continent à la place d’un pays', () => {
+  assert.equal(find('q=x&country=europe').country, 'europe');
+  assert.equal(find('q=x&country=Europe').country, 'europe');
+  assert.equal(find('q=x&country=fr').country, 'FR');
+  assert.deepEqual(continentCountries('oceanie'), ['AU', 'NZ']);
+  assert.equal(continentCountries('FR'), null);
+  assert.equal(continentCountries(''), null);
+  // Un identifiant de continent ne doit jamais être lu comme un code ISO, ni l'inverse.
+  for (const c of CONTINENTS) assert.ok(c.id.length > 2, c.id);
+  assert.equal(new Set(COUNTRIES).size, COUNTRIES.length);
+  assert.throws(() => find('q=x&country=atlantide'), (err) => err.status === 400);
+});
+
+test('mergeCountryPages alterne les pays et compte les pages lues', () => {
+  const pageOf = (country, n, totalPages, totalResults) => ({
+    items: Array.from({ length: n }, (_, i) => ({ domain: `${country}${i}`, reviews: i * 10 })),
+    pagination: { totalPages, totalResults },
+  });
+  const merged = mergeCountryPages([pageOf('fr', 3, 5, 90), null, pageOf('be', 1, 2, 30)], 1);
+  assert.deepEqual(merged.items.map((b) => b.domain), ['fr0', 'be0', 'fr1', 'fr2']);
+  assert.equal(merged.pagination.totalPages, 5);
+  assert.equal(merged.pagination.totalResults, 120);
+  assert.equal(merged.pagination.sourcePages, 2);
+  assert.equal(merged.pagination.page, 1);
+
+  const byReviews = mergeCountryPages([pageOf('fr', 2, 1, 2), pageOf('be', 3, 1, 3)], 1, { byReviews: true });
+  assert.deepEqual(byReviews.items.map((b) => b.reviews), [20, 10, 10, 0, 0]);
+
+  // Plus aucun pays à ce tour : page vide, la source est épuisée.
+  const empty = mergeCountryPages([null, null], 4);
+  assert.deepEqual(empty.items, []);
+  assert.equal(empty.pagination.totalPages, 0);
+  assert.equal(empty.pagination.sourcePages, 0);
+});
+
+test('CATEGORIES : trois niveaux, identifiants uniques et sûrs dans une URL', () => {
+  const ids = CATEGORIES.flatMap((c) => [c.id, ...c.sub.flatMap((s) => [s.id, ...(s.sub ?? []).map((l) => l.id)])]);
+  assert.equal(new Set(ids).size, ids.length);
+  for (const id of ids) assert.match(id, /^[a-z0-9]+(?:[_-][a-z0-9]+)*$/);
+  const leaves = CATEGORIES.flatMap((c) => c.sub.flatMap((s) => s.sub ?? []));
+  assert.ok(leaves.some((l) => l.id === 'watch_store'));
+  assert.equal(find('category=collectibles_store').category, 'collectibles_store');
 });
 
 test('normalizeFindParams laisse passer un secteur fin non listé', () => {

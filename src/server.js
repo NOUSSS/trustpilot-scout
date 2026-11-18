@@ -27,7 +27,10 @@ import {
   CLAIMED,
   REPLIES,
   COUNTRIES,
+  CONTINENTS,
   CATEGORIES,
+  continentCountries,
+  mergeCountryPages,
 } from './trustpilot.js';
 import { Collector, reviewMatches } from './reviews.js';
 import { RateLimiter } from './ratelimit.js';
@@ -176,6 +179,7 @@ app.get('/api/options', (req, res) => {
     claimed: CLAIMED,
     replies: REPLIES,
     countries: COUNTRIES,
+    continents: CONTINENTS.map(({ id, name }) => ({ id, name })),
     categories: CATEGORIES,
     maxPage: 1000,
   });
@@ -212,13 +216,44 @@ async function loadDomain(domain, params) {
   return null;
 }
 
-/** Page `n` de la source d'entreprises : le secteur s'il est choisi, sinon la recherche. */
-async function loadSource(p, page) {
+/** Page `n` de la source d'entreprises dans un pays : le secteur s'il est choisi, sinon la recherche. */
+async function loadCountrySource(p, page) {
   if (p.category) {
     const pathname = buildCategoryPath({ ...categorySource(p), page });
     return (await load(cache, pathname, parseCategoryPage, BACKGROUND)).payload;
   }
   return (await loadSearch({ ...searchSource(p), page }, BACKGROUND)).payload;
+}
+
+/**
+ * Page `n` de la source. Pour un continent, la page `n` de chacun de ses pays
+ * qui en a autant (connu par sa première page, en cache). Une erreur passagère
+ * fait échouer la page entière : relue, les pays déjà lus ressortent du cache.
+ */
+async function loadSource(p, page) {
+  // La recherche par ville ignore le pays : la même page servirait pour chaque pays.
+  const countries = p.category || !p.city ? continentCountries(p.country) : null;
+  if (!countries) return loadCountrySource(p, page);
+  let notFound = null;
+  const read = async (country, n) => {
+    try {
+      return await loadCountrySource({ ...p, country }, n);
+    } catch (err) {
+      if (err.status !== 404) throw err;
+      notFound = err;
+      return null;
+    }
+  };
+  const firsts = await Promise.all(countries.map((country) => read(country, 1)));
+  // Secteur inconnu partout : même erreur que pour un seul pays.
+  if (notFound && firsts.every((first) => !first)) throw notFound;
+  const pages =
+    page === 1
+      ? firsts
+      : await Promise.all(
+          countries.map((country, i) => (firsts[i]?.pagination.totalPages >= page ? read(country, page) : null))
+        );
+  return mergeCountryPages(pages, page, { byReviews: Boolean(p.category) && p.sort === 'reviews' });
 }
 
 /** Filtre appliqué par le serveur quand Trustpilot ne sait pas le faire (secteur). */
@@ -346,7 +381,11 @@ async function findCollected(p, owner, signal) {
   // Des entreprises en attente (avis illisibles pour l'instant) : relancer peut encore en
   // trouver, sauf au plafond, où un résultat de plus ne serait jamais servi.
   const more =
-    !full && ((!state.exhausted && !state.capped) || Boolean(state.running) || state.pending.length > 0);
+    !full &&
+    ((!state.exhausted && !state.capped) ||
+      Boolean(state.running) ||
+      state.pending.length > 0 ||
+      state.deferred.length > 0);
 
   return {
     kind: p.kind,
@@ -357,7 +396,8 @@ async function findCollected(p, owner, signal) {
       page: current,
       perPage,
       found: hits.length,
-      scannedBusinesses: state.scannedItems,
+      // Entreprises examinées : celles remises à plus tard n'en sont pas encore.
+      scannedBusinesses: state.examined,
       totalBusinesses: state.totalSource,
       hasNext: hits.length > offset + perPage || (more && current < maxPage),
       hasPrevious: current > 1,
@@ -395,7 +435,13 @@ app.get('/api/find', async (req, res) => {
   try {
     let body;
     if (params.kind === 'company') body = await findCompany(params);
-    else if (params.kind === 'scan' || needsServerFilter(params) || needsProfile(params)) {
+    else if (
+      params.kind === 'scan' ||
+      needsServerFilter(params) ||
+      needsProfile(params) ||
+      // Un continent rassemble plusieurs pays : sa pagination est celle du serveur.
+      continentCountries(params.country)
+    ) {
       body = await findCollected(params, clientKey(req), gone.signal);
     }
     else body = await findList(params);

@@ -348,3 +348,96 @@ test('Collector : la page suivante est préchargée pendant la lecture des fiche
   assert.equal(state.exhausted, true);
   assert.equal(state.error, null);
 });
+
+test('Collector : le plafond compte les pages lues, pas les tours d’un continent', async () => {
+  const collector = new Collector();
+  const calls = [];
+  // Chaque page de la source en lit 40 chez Trustpilot (40 pays) : le plafond de 100 tombe au 3e tour.
+  const job = {
+    loadPage: async (n) => {
+      const payload = await pagedSource(10, 2, calls)(n);
+      return { ...payload, pagination: { ...payload.pagination, sourcePages: 40 } };
+    },
+    keep: () => true,
+  };
+  const state = await collector.ensure('continent', job, 1000);
+  await settled(state);
+  assert.deepEqual(calls, [1, 2, 3]);
+  assert.equal(state.sourcePages, 120);
+  assert.equal(state.capped, true);
+  assert.equal(state.exhausted, false);
+});
+
+test('Collector : une entreprise citée deux fois dans la même page ne compte qu’une fois', async () => {
+  const collector = new Collector();
+  const job = { loadPage: onePage('a.com', 'a.com', 'x.com'), keep: () => true };
+  const state = await collector.ensure('doublons', job, 10);
+  await settled(state);
+  assert.deepEqual(state.hits.map((h) => h.domain), ['a.com', 'x.com']);
+});
+
+test('Collector : une page de continent abandonnée s’arrête entre deux lots de fiches', async () => {
+  const collector = new Collector();
+  const calls = [];
+  const gate = deferred();
+  const enriched = [];
+  const job = {
+    // 60 entreprises dans une seule page : trois lots de 20.
+    loadPage: pagedSource(1, 60, calls),
+    keep: () => true,
+    enrich: async (b) => {
+      enriched.push(b.domain);
+      await gate.promise;
+      return { ...b, matchCount: 1 };
+    },
+  };
+  const controller = new AbortController();
+  const request = collector.ensure('abandon', job, 100, { signal: controller.signal });
+  await tick();
+  assert.equal(enriched.length, 20);
+  controller.abort();
+  gate.resolve();
+  const state = await request;
+  await settled(state);
+  assert.equal(enriched.length, 20);
+  assert.equal(state.hits.length, 20);
+  assert.equal(state.pending.length, 0);
+  assert.equal(state.deferred.length, 40);
+  assert.equal(state.deferred[0].tries, 0);
+  assert.equal(state.partial, true);
+  // Examinées : les fiches parties à la lecture, pas celles remises à plus tard.
+  assert.equal(state.examined, 20);
+
+  // La requête suivante lit la fin de la page avant d'en charger une autre.
+  const next = await collector.ensure('abandon', job, 30);
+  await settled(next);
+  assert.deepEqual(calls, [1]);
+  assert.equal(enriched.length, 40);
+  assert.equal(next.hits.length, 40);
+  assert.equal(next.deferred.length, 20);
+  assert.equal(next.examined, 40);
+  assert.equal(next.hits[20].domain, 'p1-20.com');
+});
+
+test('Collector : des résultats déjà là ne relancent pas la lecture des fiches remises à plus tard', async () => {
+  const collector = new Collector();
+  const enriched = [];
+  const job = {
+    loadPage: pagedSource(1, 60, []),
+    keep: () => true,
+    enrich: async (b) => {
+      enriched.push(b.domain);
+      return { ...b, matchCount: 1 };
+    },
+  };
+  const state = collector.state('déjà-là');
+  state.hits = Array.from({ length: 10 }, (_, i) => ({ domain: `h${i}.com` }));
+  state.deferred = [{ business: { domain: 'd.com', reviews: 5 }, tries: 0 }];
+  state.scannedPages = 1;
+  state.exhausted = true;
+  const t0 = Date.now();
+  await collector.ensure('déjà-là', job, 9);
+  assert.equal(state.running, null);
+  assert.deepEqual(enriched, []);
+  assert.ok(Date.now() - t0 < 100);
+});

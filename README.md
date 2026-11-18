@@ -8,10 +8,11 @@ Pagination intégrée, cache et déduplication des requêtes.
 Un seul formulaire, dont tous les champs se combinent :
 
 - **Entreprise** — nom, mot-clé, domaine ou URL ;
-- **Secteur** — une catégorie Trustpilot (noms français) ;
+- **Secteur** — une catégorie Trustpilot (noms français), jusqu’à la
+  spécialité (« Horlogerie », « Magasin de téléphonie mobile »…), trouvée en tapant ;
 - **Mots-clés dans les avis** — l’un ou l’autre des mots, dans le texte des avis ;
 - **Phrase exacte dans les avis** — ces mots, dans cet ordre ;
-- filtres : pays, ville, note de l’entreprise, nombre d’avis, profil
+- filtres : pays ou continent, ville, note de l’entreprise, nombre d’avis, profil
   revendiqué, réponses aux avis, note de l’avis, langue des avis, tri.
 
 « Profil revendiqué : non » et « Répond aux avis » lisent la fiche de chaque
@@ -138,7 +139,8 @@ Tous les paramètres sont facultatifs, mais il faut au moins `q`, `category` ou 
 
 - `q` — entreprise : nom, mot-clé, domaine ou URL
 - `category` — identifiant de secteur Trustpilot (liste dans `/api/options`)
-- `country` — code pays (`FR`…), `city` — ville en texte libre
+- `country` — code pays (`FR`…) ou continent (`europe`, `afrique`, `amerique-nord`,
+  `amerique-sud`, `asie`, `oceanie`), `city` — ville en texte libre
 - `stars` — `3.0`, `4.0` ou `4.5` (note minimale de l’entreprise)
 - `reviews` — `25`, `50`, `100`, `250` ou `500` (avis minimum)
 - `term` — texte cherché dans les avis, `rating` — note de l’avis (1 à 5),
@@ -169,6 +171,8 @@ a été trouvé (`found`, `scannedBusinesses`, `totalBusinesses`, `partial`, `ca
 - Trustpilot ne filtre pas un secteur par nom ni par nombre d’avis : le
   serveur parcourt alors le secteur page par page, avec le même budget que la
   fouille des avis.
+- Trustpilot ne filtre qu’un pays à la fois : un continent interroge chacun de
+  ses pays (25 pour l’Europe), page par page, et mêle leurs résultats.
 - Fouille des avis : la couverture dépend du nombre d'entreprises ramenées
   par la recherche (plafonnée) ; chaque page utile coûte une requête par
   entreprise, d'où le cache et le budget. Un scan interrompu se reprend en

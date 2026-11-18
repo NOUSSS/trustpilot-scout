@@ -23,6 +23,9 @@ export function reviewMatches(page) {
   return { total, matches };
 }
 
+/** Fiches lues d'un seul tenant : une page Trustpilot. */
+const ENRICH_BATCH = 20;
+
 /** Essais d'interrogation des avis d'une entreprise avant de l'abandonner. */
 const MAX_ENRICH_TRIES = 3;
 
@@ -63,9 +66,15 @@ export class Collector {
       hits: [],
       /** Entreprises dont les avis n'ont pas pu être lus : `{ business, tries }`, réessayées au prochain appel. */
       pending: [],
+      /** Entreprises d'une page pas encore lues (budget, départ du client) : `{ business, tries }`, lues avant la page suivante. */
+      deferred: [],
       seen: new Set(),
       scannedPages: 0,
+      /** Pages réellement lues : plusieurs par page de la source pour un continent. */
+      sourcePages: 0,
       scannedItems: 0,
+      /** Entreprises examinées : écartées par le filtre, ou dont la fiche est partie à la lecture. Ne fait que croître. */
+      examined: 0,
       exhausted: false,
       partial: false,
       capped: false,
@@ -92,21 +101,48 @@ export class Collector {
     }
   }
 
+  /**
+   * Lit les fiches par lots d'une page Trustpilot. Entre deux lots, `stop()` (budget
+   * dépassé, plus personne n'attend) remet le reste à plus tard, sans compter d'essai :
+   * une page de continent en cumule des centaines.
+   */
+  async enrichBatches(state, job, entries, stop) {
+    for (let i = 0; i < entries.length; i += ENRICH_BATCH) {
+      if (i > 0 && stop()) {
+        state.deferred.push(...entries.slice(i));
+        return;
+      }
+      const batch = entries.slice(i, i + ENRICH_BATCH);
+      for (const entry of batch) {
+        if (entry.examined) continue;
+        entry.examined = true;
+        state.examined++;
+      }
+      await this.enrichAll(state, job, batch);
+    }
+  }
+
   /** Traite une page de la source. */
-  async scanOnePage(state, job) {
+  async scanOnePage(state, job, stop = () => false) {
     const pageNumber = state.scannedPages + 1;
     const payload = await job.loadPage(pageNumber);
 
     state.scannedPages = pageNumber;
+    state.sourcePages += payload.pagination.sourcePages ?? 1;
     state.scannedItems += payload.items.length;
     if (state.totalSource == null) state.totalSource = payload.pagination.totalResults;
     if (!payload.items.length || pageNumber >= payload.pagination.totalPages) state.exhausted = true;
 
-    const targets = payload.items.filter((b) => !state.seen.has(b.domain) && job.keep(b));
-    for (const b of targets) state.seen.add(b.domain);
+    // Une même page peut citer deux fois une entreprise (deux pays d'un continent) : elle ne compte qu'une fois.
+    const targets = payload.items.filter((b) => {
+      if (state.seen.has(b.domain) || !job.keep(b)) return false;
+      state.seen.add(b.domain);
+      return true;
+    });
 
     // L'ordre de poussée suit l'ordre de la source pour une pagination stable.
     if (!job.enrich) {
+      state.examined += payload.items.length;
       state.hits.push(...targets);
       this.wake(state);
       return;
@@ -117,7 +153,7 @@ export class Collector {
       job.preload &&
       targets.length &&
       !state.exhausted &&
-      pageNumber < CONFIG.reviewMaxScanPages &&
+      state.sourcePages < CONFIG.reviewMaxScanPages &&
       state.hits.length < CONFIG.reviewMaxHits
     ) {
       try {
@@ -127,7 +163,9 @@ export class Collector {
         /* simple préchauffage : `loadPage` relira la page */
       }
     }
-    await this.enrichAll(state, job, targets.map((business) => ({ business, tries: 0 })));
+    // Les entreprises écartées par le filtre sont examinées d'emblée ; les autres, à la lecture de leur fiche.
+    state.examined += payload.items.length - targets.length;
+    await this.enrichBatches(state, job, targets.map((business) => ({ business, tries: 0 })), stop);
   }
 
   /**
@@ -148,7 +186,7 @@ export class Collector {
           else if (tries + 1 >= MAX_ENRICH_TRIES) {
             console.warn('[scan] avis illisibles, entreprise abandonnée:', business.domain, err.message);
             outcomes[i] = { hit: null };
-          } else outcomes[i] = { retry: { business, tries: tries + 1 } };
+          } else outcomes[i] = { retry: { business, tries: tries + 1, examined: true } };
         }
         if (i !== next) return;
         while (next < entries.length && outcomes[next]) {
@@ -215,7 +253,9 @@ export class Collector {
     }
     if (signal?.aborted) return state;
     const sourceDone = state.exhausted || state.capped;
-    if (!state.pending.length && (state.hits.length >= needed || sourceDone)) return state;
+    // Fiches remises à plus tard : elles ne valent la peine d'être lues que sous le plafond.
+    const unread = state.deferred.length > 0 && state.hits.length < CONFIG.reviewMaxHits;
+    if (!state.pending.length && (state.hits.length >= needed || (sourceDone && !unread))) return state;
 
     this.admit(owner);
     state.owner = owner;
@@ -223,28 +263,30 @@ export class Collector {
     state.error = null;
     state.running = (async () => {
       const started = Date.now();
-      if (state.pending.length) await this.enrichAll(state, job, state.pending.splice(0));
-      while (
-        state.hits.length < needed &&
-        !state.exhausted &&
-        state.scannedPages < CONFIG.reviewMaxScanPages &&
-        state.hits.length < CONFIG.reviewMaxHits
-      ) {
-        // Budget dépassé, ou plus aucune requête n'attend : on s'arrête, la suite reprendra d'ici.
-        if (Date.now() - started > CONFIG.reviewScanBudgetMs || !state.waiters) {
+      // Budget dépassé, ou plus aucune requête n'attend : on s'arrête, la suite reprendra d'ici.
+      const stop = () => Date.now() - started > CONFIG.reviewScanBudgetMs || !state.waiters;
+      if (state.pending.length) await this.enrichBatches(state, job, state.pending.splice(0), stop);
+      while (state.hits.length < needed && state.hits.length < CONFIG.reviewMaxHits) {
+        if (stop()) {
           state.partial = true;
           break;
         }
-        await this.scanOnePage(state, job);
+        // La fin de la page en cours passe avant la page suivante : l'ordre reste celui de la source.
+        if (state.deferred.length) {
+          await this.enrichBatches(state, job, state.deferred.splice(0), stop);
+          continue;
+        }
+        if (state.exhausted || state.sourcePages >= CONFIG.reviewMaxScanPages) break;
+        await this.scanOnePage(state, job, stop);
       }
       if (
         !state.exhausted &&
-        (state.scannedPages >= CONFIG.reviewMaxScanPages || state.hits.length >= CONFIG.reviewMaxHits)
+        (state.sourcePages >= CONFIG.reviewMaxScanPages || state.hits.length >= CONFIG.reviewMaxHits)
       ) {
         state.capped = true;
         state.partial = true;
       }
-      if (state.pending.length) state.partial = true;
+      if (state.pending.length || state.deferred.length) state.partial = true;
     })();
     state.running
       .catch((err) => {
