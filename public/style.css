@@ -1,46 +1,44 @@
 /* Les styles de UI SDK (web.css) restent sous ceux de la page. */
 @layer ui-sdk;
 
-/* Design system Nexudus : couleurs relevées au pixel sur la planche d'origine. */
+/* Design system Nexudus, en sombre : fond noir, surfaces à peine plus claires. */
 :root {
-  color-scheme: light;
+  color-scheme: dark;
 
   --primary: #5165f7;
-  --primary-hover: #495cde;
-  --primary-400: #8491f7;
-  --primary-300: #a8b1f9;
-  --primary-200: #dce0fc;
-  --primary-100: #edeffe;
+  --primary-hover: #6474f8;
+  --primary-ink: #aeb8ff;
+  --primary-300: #2c3576;
+  --primary-200: #232b5c;
+  --primary-100: #1b2045;
 
-  --emerald: #29b95f;
-  --emerald-300: #abe3c0;
-  --emerald-100: #eaf9ef;
-  --emerald-ink: #12733a;
+  --emerald-300: #153d26;
+  --emerald-ink: #7fe0a3;
 
-  --orange: #f0783c;
-  --orange-300: #f6cdb4;
-  --orange-ink: #a2461a;
+  --orange-300: #47271a;
+  --orange-ink: #ffb08b;
 
-  --yellow: #ddb50a;
-  --yellow-300: #f2e19e;
-  --yellow-200: #f8f0ce;
-  --yellow-ink: #7a6304;
+  --yellow-300: #3d3410;
+  --yellow-200: #4d400c;
+  --yellow-ink: #f0d462;
 
-  --red: #f04b6a;
-  --red-300: #f8b6c6;
-  --red-200: #fddce3;
-  --red-ink: #b81f3e;
+  --red: #f2627e;
+  --red-300: #4a1a26;
+  --red-200: #2a1218;
+  --red-ink: #ff9bb0;
 
-  --blue: #0064fb;
+  --blue: #3b82f6;
 
-  --bg: #f6f6f6;
-  --surface: #ffffff;
-  --ink: #111111;
-  --ink-2: #3f3f3f;
-  --muted: #6f6f6f;
-  --faint: #9b9b9b;
-  --line: #dddddd;
-  --chip: #efefef;
+  --bg: #050505;
+  --surface: #121214;
+  --raised: #1b1b1e;
+  --ink: #f2f2f3;
+  --ink-2: #c8c8cd;
+  --muted: #9b9ba3;
+  --faint: #73737b;
+  --line: #2a2a2e;
+  --line-strong: #44444a;
+  --chip: #222226;
 
   --r-sm: 6px;
   --r: 8px;
@@ -48,7 +46,7 @@
   --font: "Figtree", "Segoe UI", system-ui, -apple-system, sans-serif;
 
   /* Jetons de UI SDK sur la même palette. */
-  --ui-background: var(--surface);
+  --ui-background: var(--raised);
   --ui-foreground: var(--ink);
   --ui-muted: var(--primary-100);
   --ui-muted-foreground: var(--muted);
@@ -58,7 +56,7 @@
   --ui-primary-foreground: #fff;
   --ui-ring: var(--ink);
   --ui-ring-border: var(--ink);
-  --ui-shadow: 0 0 0 1px var(--line), 0 8px 24px rgba(0, 0, 0, 0.1);
+  --ui-shadow: 0 0 0 1px var(--line-strong), 0 12px 32px rgba(0, 0, 0, 0.6);
   --ui-radius: 6px;
   --ui-font-sans: var(--font);
   --ui-font-size: 14px;
@@ -150,7 +148,7 @@ button, input, select { font: inherit; }
   white-space: nowrap;
 }
 
-.tag-primary { background: var(--primary-200); color: #3443c9; }
+.tag-primary { background: var(--primary-200); color: var(--primary-ink); }
 .tag-success { background: var(--emerald-300); color: var(--emerald-ink); }
 .tag-warning { background: var(--yellow-300); color: var(--yellow-ink); }
 .tag-orange { background: var(--orange-300); color: var(--orange-ink); }
@@ -214,7 +212,7 @@ input[type="number"],
 ::placeholder { color: var(--faint); opacity: 1; }
 
 input:hover,
-[data-slot="select-trigger"]:hover { border-color: #c4c4c4; }
+[data-slot="select-trigger"]:hover { border-color: var(--line-strong); }
 
 /* Focus : bordure noire de 2 px, sans décaler le contenu. */
 input:focus-visible,
@@ -285,9 +283,16 @@ input[data-slot="select-input"] {
 }
 
 :is([data-slot="select-item"], [data-slot="combobox-item"])[data-highlighted] { background: var(--primary-100); }
-:is([data-slot="select-item"], [data-slot="combobox-item"])[data-selected] { color: var(--primary); }
+:is([data-slot="select-item"], [data-slot="combobox-item"])[data-selected] { color: var(--primary-ink); }
 :is([data-slot="select-item"], [data-slot="combobox-item"])[data-disabled] { color: var(--faint); cursor: not-allowed; }
-:is([data-slot="select-item-indicator"], [data-slot="combobox-item-indicator"]) { color: var(--primary); padding-left: 8px; }
+:is([data-slot="select-item-indicator"], [data-slot="combobox-item-indicator"]) { color: var(--primary-ink); padding-left: 8px; }
+
+[data-slot="select-group-label"] {
+  padding: 12px 10px 4px;
+  color: var(--faint);
+  font-size: 12px;
+  font-weight: 600;
+}
 
 :is([data-slot="select-empty"], [data-slot="combobox-empty"]):not(:empty) {
   padding: 8px 10px;
@@ -350,7 +355,7 @@ input[data-slot="select-input"] {
   place-items: center;
   border-radius: 10px;
   background: var(--primary-200);
-  color: #3443c9;
+  color: var(--primary-ink);
   font-size: 12px;
   font-weight: 600;
 }
@@ -412,7 +417,8 @@ input[data-slot="select-input"] {
 
 [data-slot="combobox-item"].group { font-weight: 600; }
 [data-slot="combobox-item"].sub { padding-left: 22px; color: var(--ink-2); }
-[data-slot="combobox-item"].sub[data-selected] { color: var(--primary); }
+[data-slot="combobox-item"].leaf { padding-left: 34px; color: var(--muted); }
+[data-slot="combobox-item"].sub[data-selected] { color: var(--primary-ink); }
 .combo-parent { color: var(--faint); display: none; white-space: pre; }
 .is-filtering .combo-parent { display: inline; }
 .is-filtering [data-slot="combobox-item"].sub { padding-left: 10px; }
@@ -462,7 +468,7 @@ input[data-slot="select-input"] {
   box-shadow: inset 0 0 0 1px var(--line);
 }
 
-.btn-outline:hover { background: var(--line); box-shadow: none; }
+.btn-outline:hover { background: var(--chip); box-shadow: inset 0 0 0 1px var(--line-strong); }
 .btn-outline[disabled] { background: var(--surface); color: var(--faint); }
 
 /* ---------- Résultats ---------- */
@@ -506,7 +512,7 @@ input[data-slot="select-input"] {
 }
 
 a.card:hover,
-article.card:hover { box-shadow: 0 8px 24px -12px rgba(17, 17, 17, 0.18); }
+article.card:hover { box-shadow: inset 0 0 0 1px var(--line-strong); }
 
 .card-top { display: flex; align-items: center; gap: 12px; }
 
@@ -516,7 +522,7 @@ article.card:hover { box-shadow: 0 8px 24px -12px rgba(17, 17, 17, 0.18); }
   flex: none;
   border-radius: 50%;
   background: var(--primary-100);
-  color: var(--primary);
+  color: var(--primary-ink);
   display: grid;
   place-items: center;
   font-weight: 600;
@@ -551,7 +557,7 @@ article.card:hover { box-shadow: 0 8px 24px -12px rgba(17, 17, 17, 0.18); }
 }
 
 .card-title strong a { text-decoration: none; }
-.card-title strong a:hover { color: var(--primary); }
+.card-title strong a:hover { color: var(--primary-ink); }
 
 .card-title small {
   display: block;
@@ -650,7 +656,7 @@ article.card:hover { box-shadow: 0 8px 24px -12px rgba(17, 17, 17, 0.18); }
   color: var(--faint);
 }
 
-.snippet small a { color: var(--primary); text-decoration: none; font-weight: 500; }
+.snippet small a { color: var(--primary-ink); text-decoration: none; font-weight: 500; }
 .snippet small a:hover { text-decoration: underline; }
 
 .scanline {
@@ -739,7 +745,7 @@ article.card:hover { box-shadow: 0 8px 24px -12px rgba(17, 17, 17, 0.18); }
   color: var(--faint);
 }
 
-.review-meta a { color: var(--primary); text-decoration: none; font-weight: 500; }
+.review-meta a { color: var(--primary-ink); text-decoration: none; font-weight: 500; }
 .review-meta a:hover { text-decoration: underline; }
 
 /* ---------- Pagination ---------- */
@@ -772,7 +778,7 @@ article.card:hover { box-shadow: 0 8px 24px -12px rgba(17, 17, 17, 0.18); }
 
 .pager :is([data-slot="pagination-previous"], [data-slot="pagination-next"]) { width: 40px; padding: 0; }
 .pager button:hover:not([data-disabled], [data-current]) { background: var(--line); }
-.pager [data-slot="pagination-link"][data-current] { background: var(--ink); color: #fff; cursor: default; }
+.pager [data-slot="pagination-link"][data-current] { background: var(--ink); color: var(--bg); cursor: default; }
 .pager button[data-disabled] { color: var(--line); cursor: default; }
 .pager [data-slot="pagination-ellipsis"] { color: var(--faint); padding: 0 4px; }
 .pager button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
